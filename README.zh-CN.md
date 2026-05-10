@@ -1,6 +1,6 @@
 # check-your-api
 
-面向 OpenAI 兼容 API 的批量可用性检测工具，支持实时延迟监控。
+面向 OpenAI 兼容 API 的多 Key 批量可用性检测工具，支持矩阵结果和实时延迟监控。
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/Z1rconium/check-your-api)
 
@@ -15,14 +15,16 @@
 
 ## 简介
 
-`check-your-api` 是一个基于 Web 的工具，用于验证 OpenAI 兼容 API 端点。它可以发现可用模型并通过并发探测请求测试其实际可用性，提供模型状态和首字延迟的即时反馈。
+`check-your-api` 是一个基于 Web 的工具，用于验证同一个 OpenAI 兼容 API 端点下的多枚 API Key。它会逐 Key 拉取模型列表，合并模型并集，再用矩阵方式检测每个 `Key × 模型` 组合的实际可用性，提供状态、失败原因和首字延迟反馈。
 
 **核心能力：**
-- 从任何 OpenAI 兼容端点获取模型列表
-- 可配置并发数的批量可用性测试
+- 从任何 OpenAI 兼容端点逐 Key 获取模型列表
+- 合并多枚 Key 的模型并集
+- 可配置总并发数的 `Key × 模型` 矩阵检测
 - 首字延迟测量，提供性能洞察
 - 模型选择和过滤，支持针对性测试
-- 通过 localStorage 持久化表单，方便使用
+- API Key 不持久化，刷新页面后清空
+- 通过 localStorage 持久化 Base URL、并发数和 prompt 等非敏感配置
 
 ## 技术栈
 
@@ -62,12 +64,13 @@
 - `api/*.ts` - Vercel 无服务器函数处理器
 
 **请求流程：**
-1. 用户配置 base URL、API key 和并发数
-2. 前端通过 `/api/models` 获取模型
-3. 用户选择模型并启动批量检测
-4. 前端向 `/api/check` 发送并发请求
-5. 后端代理流式请求到目标 API
-6. 测量并显示首字延迟
+1. 用户配置 Base URL、多枚 API Key、总并发数和 prompt
+2. 前端对每枚 Key 分别调用 `/api/models`
+3. 前端合并所有成功返回的模型并集
+4. 用户选择模型并启动批量检测
+5. 前端展开完整 `Key × 模型` 任务矩阵，并按总并发调用 `/api/check`
+6. 后端代理流式请求到目标 API
+7. 单元格级别显示可用性、首字延迟和失败原因
 
 ## 快速开始
 
@@ -119,7 +122,15 @@ PORT=3000 npm run start
 
 ### Vercel（推荐）
 
-本项目针对 Vercel 部署进行了优化，零配置：
+本项目针对 Vercel 部署进行了优化，推荐把你的 fork 导入 Vercel Dashboard：
+
+1. 将改动推送到 GitHub fork。
+2. 在 Vercel Dashboard 选择 **Add New Project**。
+3. 导入该 GitHub 仓库。
+4. 保持默认构建命令 `npm run build`，输出目录 `dist`。
+5. 部署完成后在生产域名上做一次模型拉取和矩阵检测 smoke test。
+
+也可以使用 Vercel CLI：
 
 ```bash
 vercel
@@ -131,6 +142,8 @@ vercel
 - 将 Vite 前端构建到 `dist/`
 - 将 `/api/models` 和 `/api/check` 暴露为无服务器函数
 - 从构建输出提供静态资源
+
+免费 Hobby 计划有函数调用量、运行时长和资源限制。矩阵检测由前端队列调度，建议总并发先从 3 到 5 开始；当任务数较大时，先用模型选择器缩小范围。
 
 ### 自托管
 
@@ -165,14 +178,17 @@ npm run start
 
 ## 核心功能
 
-### 模型发现
-自动从配置端点的 `/models` 接口获取可用模型。
+### 多 Key 模型发现
+对每枚 API Key 分别调用配置端点的 `/models` 接口，合并所有成功返回的模型并集。单个 Key 拉取失败不会阻止其他 Key 继续工作。
 
 ### 选择性测试
-使用模型选择器选择要测试的模型，支持搜索和批量选择控制。
+使用模型选择器选择要测试的模型，支持搜索和批量选择控制。模型来源是多枚 Key 的模型并集。
 
-### 并发检测
-配置并发数（1-N 个并行请求）以平衡速度和速率限制。
+### 矩阵检测
+检测范围会展开为完整 `Key × 模型` 矩阵。即使某个 Key 的 `/models` 没列出某个模型，应用仍会实际探测这个组合，避免遗漏隐藏权限或不准确的模型列表。
+
+### 总并发控制
+配置总并发数（1-N 个并行请求）以平衡速度、Vercel 免费额度和上游速率限制。
 
 ### 性能指标
 显示可用模型的首字延迟，按响应速度颜色编码：
@@ -186,8 +202,8 @@ npm run start
 ### 自定义提示词
 在所有模型中使用一致的测试提示词以获得可比较的结果。
 
-### 表单持久化
-API 凭证和设置保存到浏览器 localStorage 以方便使用。
+### 非敏感表单持久化
+Base URL、并发数和 prompt 会保存到浏览器 localStorage。API Key 不会写入 localStorage，也不会被服务端保存、缓存或聚合。
 
 ## API 兼容性
 
@@ -216,10 +232,12 @@ API 凭证和设置保存到浏览器 localStorage 以方便使用。
 ## 使用说明
 
 - **并发数**：较高的值测试更快，但可能触发速率限制。建议从 3-5 开始。
-- **安全性**：API 密钥仅存储在浏览器 localStorage 中，永远不会发送给第三方。
+- **安全性**：API 密钥只保存在当前页面内存状态，不写入 localStorage；请求时只发送给本项目代理和目标上游 API。
 - **可用性**：模型出现在 `/models` 中并不保证它可以被调用。
+- **矩阵语义**：`未列入 /models` 只表示该 Key 的模型列表没有返回该模型，不代表检测会跳过。
 - **延迟**：首字延迟测量到第一个流式响应块的时间。
 - **超时**：请求在 30 秒后超时。
+- **免费 Vercel**：Key 数乘以模型数就是探测任务数。超过 100 个任务时界面会提示风险，但不会硬性阻止。
 
 ## 开发
 
@@ -233,6 +251,10 @@ API 凭证和设置保存到浏览器 localStorage 以方便使用。
 - `npm run build:server` - 仅构建后端
 - `npm run start` - 启动生产服务器
 - `npm run preview` - 本地预览生产构建
+
+### 功能说明
+
+多 Key 矩阵探测的行为契约见 [`docs/multi-key-probe.md`](./docs/multi-key-probe.md)。
 
 ### TypeScript 配置
 
