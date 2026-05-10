@@ -21,7 +21,7 @@ export function createApp() {
     res.status(result.status).json(result.body);
   });
 
-  if (process.env.NODE_ENV === "production") {
+  if (process.env.NODE_ENV === "production" || process.env.npm_lifecycle_event === "start") {
     app.use(express.static(distDir));
 
     app.get("*", (_req, res) => {
