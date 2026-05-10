@@ -47,6 +47,8 @@ body,
 #root {
   min-height: 100%;
   margin: 0;
+  max-width: 100%;
+  overflow-x: clip;
 }
 
 body {
@@ -121,6 +123,7 @@ a {
 .content {
   display: grid;
   gap: 24px;
+  min-width: 0;
 }
 
 .hero {
@@ -130,6 +133,7 @@ a {
   align-items: end;
   margin-bottom: 32px;
   padding-top: 10px;
+  min-width: 0;
 }
 
 .eyebrow {
@@ -174,6 +178,7 @@ a {
   padding: 24px;
   border-radius: 16px;
   background: var(--surface-card);
+  min-width: 0;
 }
 
 .summary-label,
@@ -227,12 +232,15 @@ a {
   padding: 28px;
   border-radius: 12px;
   background: var(--surface-soft);
+  min-width: 0;
+  max-width: 100%;
 }
 
 .panel-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.9fr);
   gap: 24px;
+  overflow: hidden;
 }
 
 .config-column,
@@ -244,6 +252,7 @@ a {
   display: grid;
   gap: 18px;
   align-content: start;
+  overflow: hidden;
 }
 
 .form {
@@ -410,6 +419,7 @@ button:disabled {
   gap: 12px;
   margin: 0;
   padding: 0;
+  min-width: 0;
 }
 
 .stat-pill {
@@ -420,6 +430,7 @@ button:disabled {
   border: 1px solid var(--hairline);
   border-radius: 12px;
   background: var(--canvas);
+  overflow: hidden;
 }
 
 .stat-pill dt {
@@ -437,6 +448,9 @@ button:disabled {
 .key-list {
   display: grid;
   gap: 12px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .key-empty,
@@ -465,10 +479,13 @@ button:disabled {
 
 .key-card {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) max-content;
   gap: 10px;
   align-items: start;
   padding: 16px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .key-card div {
@@ -480,6 +497,7 @@ button:disabled {
 .key-card strong,
 .key-error {
   overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .key-card span {
@@ -492,6 +510,7 @@ button:disabled {
   color: var(--error);
   font-size: 13px;
   line-height: 1.5;
+  max-width: 100%;
 }
 
 .fetch-badge,
