@@ -11,7 +11,7 @@ type ModelsResponse = {
   data?: Model[];
 };
 
-type CheckStatus = "idle" | "checking" | "available" | "unavailable" | "skipped";
+type CheckStatus = "idle" | "checking" | "available" | "unavailable";
 type ModelFetchStatus = "idle" | "loading" | "loaded" | "failed";
 type ProbeMode = "multiKey" | "multiBaseUrl";
 type ResultFilter = "all" | "available" | "unavailable" | "pending";
@@ -31,7 +31,7 @@ type ProbeEntry = {
   modelIds: string[];
 };
 
-type MatrixResult = {
+type ProbeResult = {
   columnId: string;
   modelId: string;
   status: CheckStatus;
@@ -39,7 +39,7 @@ type MatrixResult = {
   errorMessage: string | null;
 };
 
-type MatrixTask = {
+type ProbeTask = {
   columnId: string;
   baseUrl: string;
   apiKey: string;
@@ -313,11 +313,19 @@ function getStatusLabel(status?: CheckStatus) {
     return "不可用";
   }
 
-  if (status === "skipped") {
-    return "跳过";
+  return "待检测";
+}
+
+function matchesResultFilter(status: CheckStatus, filter: ResultFilter) {
+  if (filter === "all") {
+    return true;
   }
 
-  return "待检测";
+  if (filter === "pending") {
+    return status === "idle" || status === "checking";
+  }
+
+  return status === filter;
 }
 
 function getFetchStatusLabel(status: ModelFetchStatus) {
@@ -336,12 +344,39 @@ function getFetchStatusLabel(status: ModelFetchStatus) {
   return "未拉取";
 }
 
-function getMatrixResultKey(columnId: string, modelId: string) {
+function getProbeResultKey(columnId: string, modelId: string) {
   return `${columnId}::${modelId}`;
 }
 
 function isModelListedByEntry(entry: ProbeEntry, modelId: string) {
   return entry.modelIds.includes(modelId);
+}
+
+function buildRoundRobinTasks(entries: ProbeEntry[], selectedModels: Model[]): ProbeTask[] {
+  const queues = entries.map((entry) =>
+    selectedModels
+      .filter((model) => isModelListedByEntry(entry, model.id))
+      .map((model) => ({
+        columnId: entry.id,
+        baseUrl: entry.baseUrl,
+        apiKey: entry.apiKey,
+        modelId: model.id
+      }))
+  );
+  const tasks: ProbeTask[] = [];
+  const maxQueueLength = Math.max(0, ...queues.map((queue) => queue.length));
+
+  for (let index = 0; index < maxQueueLength; index += 1) {
+    for (const queue of queues) {
+      const task = queue[index];
+
+      if (task) {
+        tasks.push(task);
+      }
+    }
+  }
+
+  return tasks;
 }
 
 function getRawNonEmptyLineCount(value: string) {
@@ -409,11 +444,12 @@ export default function App() {
   const [fetchingModels, setFetchingModels] = useState(false);
   const [checkingModels, setCheckingModels] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
+  const [showColumnDetails, setShowColumnDetails] = useState(false);
   const [modelSearchQuery, setModelSearchQuery] = useState("");
   const [fetchError, setFetchError] = useState("");
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [resultFilter, setResultFilter] = useState<ResultFilter>("all");
-  const [matrixResults, setMatrixResults] = useState<Record<string, MatrixResult>>({});
+  const [probeResults, setProbeResults] = useState<Record<string, ProbeResult>>({});
   const fieldRefs = useRef<Record<FieldName, InputElement | null>>({
     baseUrl: null,
     baseUrls: null,
@@ -469,9 +505,9 @@ export default function App() {
   const visibleResultValues = useMemo(
     () =>
       visibleProbeablePairs
-        .map((pair) => matrixResults[getMatrixResultKey(pair.columnId, pair.modelId)])
-        .filter((result): result is MatrixResult => Boolean(result)),
-    [matrixResults, visibleProbeablePairs]
+        .map((pair) => probeResults[getProbeResultKey(pair.columnId, pair.modelId)])
+        .filter((result): result is ProbeResult => Boolean(result)),
+    [probeResults, visibleProbeablePairs]
   );
   const availableCount = useMemo(
     () => visibleResultValues.filter((result) => result.status === "available").length,
@@ -496,53 +532,60 @@ export default function App() {
   ).length;
   const scaleWarning =
     totalTaskCount > LARGE_TASK_WARNING_THRESHOLD
-      ? `本次会产生 ${totalTaskCount} 个探测任务。免费 Vercel 建议先降低模型数或并发数。`
+      ? `本次会产生 ${totalTaskCount} 个探测任务。建议先降低模型数或并发数。`
       : "";
 
   const getResultForCell = (columnId: string, modelId: string) =>
-    matrixResults[getMatrixResultKey(columnId, modelId)];
+    probeResults[getProbeResultKey(columnId, modelId)];
 
-  const getCellStatus = (entry: ProbeEntry, modelId: string): CheckStatus => {
-    if (!isModelListedByEntry(entry, modelId)) {
-      return "skipped";
-    }
-
-    return getResultForCell(entry.id, modelId)?.status ?? "idle";
-  };
-
-  const getModelStatuses = (modelId: string) =>
-    probeEntries.map((entry) => getCellStatus(entry, modelId));
+  const getProbeStatus = (columnId: string, modelId: string): CheckStatus =>
+    getResultForCell(columnId, modelId)?.status ?? "idle";
 
   const filterCounts: Record<ResultFilter, number> = {
-    all: visibleModels.length,
-    available: visibleModels.filter((model) =>
-      getModelStatuses(model.id).some((status) => status === "available")
+    all: totalTaskCount,
+    available: visibleProbeablePairs.filter(
+      (pair) => getProbeStatus(pair.columnId, pair.modelId) === "available"
     ).length,
-    unavailable: visibleModels.filter((model) =>
-      getModelStatuses(model.id).some((status) => status === "unavailable")
+    unavailable: visibleProbeablePairs.filter(
+      (pair) => getProbeStatus(pair.columnId, pair.modelId) === "unavailable"
     ).length,
-    pending: visibleModels.filter((model) =>
-      getModelStatuses(model.id).some((status) => status === "idle" || status === "checking")
+    pending: visibleProbeablePairs.filter((pair) =>
+      matchesResultFilter(getProbeStatus(pair.columnId, pair.modelId), "pending")
     ).length
   };
 
-  const displayedModels = useMemo(() => {
-    if (resultFilter === "all") {
-      return visibleModels;
-    }
+  const displayedProbeGroups = useMemo(
+    () =>
+      probeEntries.map((entry) => {
+        const items = visibleModels
+          .filter((model) => isModelListedByEntry(entry, model.id))
+          .map((model) => {
+            const result = getResultForCell(entry.id, model.id);
+            const status = result?.status ?? "idle";
 
-    if (resultFilter === "pending") {
-      return visibleModels.filter((model) =>
-        getModelStatuses(model.id).some(
-          (status) => status === "idle" || status === "checking"
-        )
-      );
-    }
+            return {
+              model,
+              result,
+              status,
+              latencyLevel: getLatencyLevel(result?.firstTokenLatencyMs ?? null)
+            };
+          });
+        const availableInGroup = items.filter((item) => item.status === "available").length;
+        const unavailableInGroup = items.filter((item) => item.status === "unavailable").length;
+        const checkedInGroup = availableInGroup + unavailableInGroup;
 
-    return visibleModels.filter((model) =>
-      getModelStatuses(model.id).some((status) => status === resultFilter)
-    );
-  }, [matrixResults, resultFilter, visibleModels, probeEntries]);
+        return {
+          entry,
+          items: items.filter((item) => matchesResultFilter(item.status, resultFilter)),
+          totalCount: items.length,
+          checkedCount: checkedInGroup,
+          pendingCount: Math.max(0, items.length - checkedInGroup),
+          availableCount: availableInGroup,
+          unavailableCount: unavailableInGroup
+        };
+      }),
+    [probeEntries, probeResults, resultFilter, visibleModels]
+  );
 
   const statusHeadline = useMemo(() => {
     if (checkingModels) {
@@ -630,8 +673,9 @@ export default function App() {
     setProbeEntries([]);
     setModels([]);
     setSelectedModelIds([]);
-    setMatrixResults({});
+    setProbeResults({});
     setShowModelPicker(false);
+    setShowColumnDetails(false);
     setModelSearchQuery("");
     setResultFilter("all");
   };
@@ -740,13 +784,13 @@ export default function App() {
     focusFirstFieldError(nextErrors);
   };
 
-  const updateMatrixResult = (
+  const updateProbeResult = (
     columnId: string,
     modelId: string,
-    patch: Partial<MatrixResult> & Pick<MatrixResult, "status">
+    patch: Partial<ProbeResult> & Pick<ProbeResult, "status">
   ) => {
-    setMatrixResults((current) => {
-      const resultKey = getMatrixResultKey(columnId, modelId);
+    setProbeResults((current) => {
+      const resultKey = getProbeResultKey(columnId, modelId);
 
       return {
         ...current,
@@ -800,8 +844,9 @@ export default function App() {
     setProbeEntries(nextProbeEntries);
     setModels([]);
     setSelectedModelIds([]);
-    setMatrixResults({});
+    setProbeResults({});
     setResultFilter("all");
+    setShowColumnDetails(false);
 
     try {
       const queue = [...nextProbeEntries];
@@ -887,6 +932,7 @@ export default function App() {
       setModels(mergedModels);
       setSelectedModelIds(mergedModels.map((model) => model.id));
       setShowModelPicker(false);
+      setShowColumnDetails(false);
       setModelSearchQuery("");
 
       if (successfulEntryCount === 0) {
@@ -927,7 +973,7 @@ export default function App() {
     }
 
     if (probeEntries.length === 0 || models.length === 0) {
-      setFetchError("先获取模型，再开始矩阵检测。");
+      setFetchError("先获取模型，再开始批量检测。");
       return;
     }
 
@@ -936,21 +982,12 @@ export default function App() {
       return;
     }
 
-    const tasks: MatrixTask[] = probeEntries.flatMap((entry) =>
-      visibleModels
-        .filter((model) => isModelListedByEntry(entry, model.id))
-        .map((model) => ({
-          columnId: entry.id,
-          baseUrl: entry.baseUrl,
-          apiKey: entry.apiKey,
-          modelId: model.id
-        }))
-    );
+    const tasks = buildRoundRobinTasks(probeEntries, visibleModels);
 
     if (tasks.length === 0) {
       setFetchError(`当前选中的模型没有匹配到可探测的 ${activeColumnLabel}。`);
       setFieldErrors({});
-      setMatrixResults({});
+      setProbeResults({});
       return;
     }
 
@@ -960,10 +997,10 @@ export default function App() {
     setCheckingModels(true);
     setFetchError("");
     setFieldErrors({});
-    setMatrixResults(
+    setProbeResults(
       Object.fromEntries(
         tasks.map((task) => [
-          getMatrixResultKey(task.columnId, task.modelId),
+          getProbeResultKey(task.columnId, task.modelId),
           {
             columnId: task.columnId,
             modelId: task.modelId,
@@ -988,7 +1025,7 @@ export default function App() {
               return;
             }
 
-            updateMatrixResult(task.columnId, task.modelId, {
+            updateProbeResult(task.columnId, task.modelId, {
               status: "checking",
               firstTokenLatencyMs: null,
               errorMessage: null
@@ -1001,7 +1038,7 @@ export default function App() {
                 return;
               }
 
-              updateMatrixResult(task.columnId, task.modelId, {
+              updateProbeResult(task.columnId, task.modelId, {
                 status: "available",
                 firstTokenLatencyMs: result.firstTokenLatencyMs,
                 errorMessage: null
@@ -1011,7 +1048,7 @@ export default function App() {
                 return;
               }
 
-              updateMatrixResult(task.columnId, task.modelId, {
+              updateProbeResult(task.columnId, task.modelId, {
                 status: "unavailable",
                 firstTokenLatencyMs: null,
                 errorMessage: getErrorMessage(error)
@@ -1037,8 +1074,8 @@ export default function App() {
 
   const heroTitle = isMultiBaseUrlMode ? "多端点 API 探测" : "多 Key API 探测";
   const heroSubtitle = isMultiBaseUrlMode
-    ? "单密钥多端点、模型并集、矩阵检测，直接看同一枚 Key 在不同 Base URL 下的可用性和首字延迟。"
-    : "同端点多密钥、模型并集、矩阵检测，直接看每个 Key 对每个模型的可用性和首字延迟。";
+    ? "单密钥多端点、模型并集、按列盘点，直接看同一枚 Key 在不同 Base URL 下的可用性和首字延迟。"
+    : "同端点多密钥、模型并集、按列盘点，直接看每个 Key 对每个模型的可用性和首字延迟。";
   const configDescription = isMultiBaseUrlMode
     ? "同一枚 API Key 下，每行输入一个 Base URL。"
     : "同一个 Base URL 下，每行输入一枚 API Key。";
@@ -1046,6 +1083,8 @@ export default function App() {
   const columnStatusLabel = isMultiBaseUrlMode ? "Base URL 拉取状态" : "API Key 拉取状态";
   const emptyColumnLabel = isMultiBaseUrlMode ? "待拉取 Endpoint" : "待拉取 Key";
   const resultsColumnLabel = isMultiBaseUrlMode ? "Base URL" : "API Key";
+  const columnDetailsTitle = isMultiBaseUrlMode ? "Endpoint 拉取详情" : "Key 拉取详情";
+  const columnDetailsId = "column-fetch-details";
   const modelPickerDescription = isMultiBaseUrlMode
     ? "模型列表来自所有成功拉取的 Base URL 的并集。"
     : "模型列表来自所有成功拉取的 Key 的并集。";
@@ -1272,7 +1311,7 @@ export default function App() {
                     }
                   />
                   <small className="field-help" id="concurrency-help">
-                    作用于模型拉取和矩阵检测的总队列。
+                    作用于模型拉取和批量检测的总队列。
                   </small>
                   {fieldErrors.concurrency ? (
                     <small className="field-error" id="concurrency-error" role="alert">
@@ -1351,29 +1390,52 @@ export default function App() {
               </div>
             </dl>
 
-            <div className="key-list" aria-label={columnStatusLabel}>
-              {probeEntries.length === 0 ? (
-                <div className="key-empty">
-                  <strong>{pendingColumnCount}</strong>
-                  <span>{emptyColumnLabel}</span>
-                </div>
-              ) : (
-                probeEntries.map((entry) => (
-                  <article className="key-card" key={entry.id}>
-                    <div>
-                      <strong>{entry.displayLabel}</strong>
-                      <span>{entry.modelIds.length} 个模型</span>
-                    </div>
-                    <span className={`fetch-badge fetch-${entry.modelFetchStatus}`}>
-                      {getFetchStatusLabel(entry.modelFetchStatus)}
+            {probeEntries.length === 0 ? (
+              <div className="key-empty">
+                <strong>{pendingColumnCount}</strong>
+                <span>{emptyColumnLabel}</span>
+              </div>
+            ) : (
+              <section className="column-details">
+                <div className="column-details-head">
+                  <div className="column-details-title">
+                    <strong>{columnDetailsTitle}</strong>
+                    <span>
+                      已处理 {loadedEntryCount + failedEntryCount}/{probeEntries.length}
+                      {failedEntryCount > 0 ? `，失败 ${failedEntryCount}` : ""}
                     </span>
-                    {entry.modelFetchError ? (
-                      <p className="key-error">{entry.modelFetchError}</p>
-                    ) : null}
-                  </article>
-                ))
-              )}
-            </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="secondary details-toggle"
+                    aria-expanded={showColumnDetails}
+                    aria-controls={columnDetailsId}
+                    onClick={() => setShowColumnDetails((current) => !current)}
+                  >
+                    {showColumnDetails ? "收起" : "展开"} {probeEntries.length} 项
+                  </button>
+                </div>
+
+                {showColumnDetails ? (
+                  <div className="key-list" id={columnDetailsId} aria-label={columnStatusLabel}>
+                    {probeEntries.map((entry) => (
+                      <article className="key-card" key={entry.id}>
+                        <div>
+                          <strong>{entry.displayLabel}</strong>
+                          <span>{entry.modelIds.length} 个模型</span>
+                        </div>
+                        <span className={`fetch-badge fetch-${entry.modelFetchStatus}`}>
+                          {getFetchStatusLabel(entry.modelFetchStatus)}
+                        </span>
+                        {entry.modelFetchError ? (
+                          <p className="key-error">{entry.modelFetchError}</p>
+                        ) : null}
+                      </article>
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+            )}
           </aside>
         </section>
 
@@ -1392,10 +1454,8 @@ export default function App() {
         <section className="panel results-panel" aria-busy={checkingModels}>
           <div className="section-head results-head">
             <div>
-              <h2>探测矩阵</h2>
-              <p>
-                行是模型，列是 {resultsColumnLabel}；每个单元格独立展示状态、延迟和失败原因。
-              </p>
+              <h2>按列盘点</h2>
+              <p>按 {resultsColumnLabel} 分组显示已列出的模型、状态、延迟和失败原因。</p>
             </div>
 
             <div className="filter-group" role="tablist" aria-label="结果过滤">
@@ -1443,107 +1503,69 @@ export default function App() {
             <div className="empty empty-dark">还没有模型。先获取模型并集。</div>
           ) : visibleModels.length === 0 ? (
             <div className="empty empty-dark">当前没有选中任何模型。</div>
-          ) : displayedModels.length === 0 ? (
-            <div className="empty empty-dark">这个筛选条件下没有结果。</div>
           ) : (
-            <>
-              <div className="matrix-scroll">
-                <table className="matrix-table">
-                  <thead>
-                    <tr>
-                      <th scope="col">模型</th>
-                      {probeEntries.map((entry) => (
-                        <th key={entry.id} scope="col">
-                          {entry.displayLabel}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {displayedModels.map((model) => (
-                      <tr key={model.id}>
-                        <th scope="row">
-                          <span translate="no">{model.id}</span>
-                          <small>
-                            {model.owned_by ? `owned by ${model.owned_by}` : "未提供所有者信息"}
-                          </small>
-                        </th>
-                        {probeEntries.map((entry) => {
-                          const result = getResultForCell(entry.id, model.id);
-                          const status = getCellStatus(entry, model.id);
-                          const latencyLevel = getLatencyLevel(result?.firstTokenLatencyMs ?? null);
-                          const listedByEntry = isModelListedByEntry(entry, model.id);
+            <div className="probe-groups" aria-label="按列盘点结果">
+              {displayedProbeGroups.map((group) => (
+                <section className="probe-group" key={group.entry.id}>
+                  <div className="probe-group-head">
+                    <div>
+                      <h3>{group.entry.displayLabel}</h3>
+                      <p>
+                        {group.totalCount} 个模型，已完成 {group.checkedCount}，待完成{" "}
+                        {group.pendingCount}
+                      </p>
+                    </div>
 
-                          return (
-                            <td key={entry.id}>
-                              <div className="matrix-cell">
-                                <span className={`badge badge-${status}`}>
-                                  {getStatusLabel(status)}
-                                </span>
-                                {status === "available" ? (
-                                  <span className={`latency latency-${latencyLevel}`}>
-                                    {typeof result?.firstTokenLatencyMs === "number"
-                                      ? `${result.firstTokenLatencyMs} ms`
-                                      : "无首字延迟"}
-                                  </span>
-                                ) : null}
-                                {status === "unavailable" && result?.errorMessage ? (
-                                  <span className="failure-reason">{result.errorMessage}</span>
-                                ) : null}
-                                {!listedByEntry ? (
-                                  <span className="not-listed">未列入 /models</span>
-                                ) : null}
-                              </div>
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    <dl className="probe-group-stats" aria-label={`${group.entry.label} 统计`}>
+                      <div>
+                        <dt>可用</dt>
+                        <dd>{group.availableCount}</dd>
+                      </div>
+                      <div>
+                        <dt>不可用</dt>
+                        <dd>{group.unavailableCount}</dd>
+                      </div>
+                    </dl>
+                  </div>
 
-              <div className="mobile-results" aria-label="移动端矩阵结果">
-                {probeEntries.map((entry) => (
-                  <section className="mobile-key-group" key={entry.id}>
-                    <h3>{entry.displayLabel}</h3>
-                    <div className="mobile-model-list">
-                      {displayedModels.map((model) => {
-                        const result = getResultForCell(entry.id, model.id);
-                        const status = getCellStatus(entry, model.id);
-                        const latencyLevel = getLatencyLevel(result?.firstTokenLatencyMs ?? null);
-                        const listedByEntry = isModelListedByEntry(entry, model.id);
+                  {group.totalCount === 0 ? (
+                    <div className="probe-empty">当前选择下没有可探测模型。</div>
+                  ) : group.items.length === 0 ? (
+                    <div className="probe-empty">这个筛选条件下没有结果。</div>
+                  ) : (
+                    <div className="probe-list">
+                      {group.items.map(({ model, result, status, latencyLevel }) => (
+                        <article className="probe-card" key={model.id}>
+                          <div className="probe-card-main">
+                            <strong translate="no">{model.id}</strong>
+                            <span>
+                              {model.owned_by ? `owned by ${model.owned_by}` : "未提供所有者信息"}
+                            </span>
+                          </div>
 
-                        return (
-                          <article className="mobile-model-card" key={model.id}>
-                            <div>
-                              <strong translate="no">{model.id}</strong>
-                              <small>
-                                {listedByEntry ? "已列入 /models" : "未列入 /models"}
-                              </small>
-                            </div>
+                          <div className="probe-card-status">
                             <span className={`badge badge-${status}`}>
                               {getStatusLabel(status)}
                             </span>
                             {status === "available" ? (
-                              <p className={`latency latency-${latencyLevel}`}>
-                                首字延迟{" "}
+                              <span className={`latency latency-${latencyLevel}`}>
                                 {typeof result?.firstTokenLatencyMs === "number"
                                   ? `${result.firstTokenLatencyMs} ms`
-                                  : "未获取到"}
-                              </p>
+                                  : "无首字延迟"}
+                              </span>
                             ) : null}
-                            {status === "unavailable" && result?.errorMessage ? (
-                              <p className="failure-reason">{result.errorMessage}</p>
-                            ) : null}
-                          </article>
-                        );
-                      })}
+                          </div>
+
+                          {status === "unavailable" && result?.errorMessage ? (
+                            <p className="failure-reason">{result.errorMessage}</p>
+                          ) : null}
+                        </article>
+                      ))}
                     </div>
-                  </section>
-                ))}
-              </div>
-            </>
+                  )}
+                </section>
+              ))}
+            </div>
           )}
         </section>
       </main>

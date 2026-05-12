@@ -1,6 +1,6 @@
 # check-your-api
 
-Multi-key and multi-endpoint availability checker for OpenAI-compatible APIs with matrix results and real-time latency monitoring.
+Multi-key and multi-endpoint availability checker for OpenAI-compatible APIs with column-grouped results and real-time latency monitoring.
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/Z1rconium/check-your-api)
 
@@ -15,13 +15,13 @@ Multi-key and multi-endpoint availability checker for OpenAI-compatible APIs wit
 
 ## Overview
 
-`check-your-api` is a web-based tool for validating OpenAI-compatible APIs in two comparison modes: one Base URL with multiple API keys, or one API key with multiple Base URLs. It fetches models per comparison column, merges the model union, then checks the listed `column × model` combinations as a matrix with status, failure reason, and first-token latency feedback.
+`check-your-api` is a web-based tool for validating OpenAI-compatible APIs in two comparison modes: one Base URL with multiple API keys, or one API key with multiple Base URLs. It fetches models per comparison column, merges the model union, then checks the listed `column × model` combinations in Key or Endpoint groups with status, failure reason, and first-token latency feedback.
 
 **Key capabilities:**
 - Fetch model lists per API key from any OpenAI-compatible endpoint
 - Fetch model lists across multiple Base URLs with one API key
 - Merge model lists across keys or endpoints
-- `Key/Endpoint × model` matrix testing with configurable total concurrency
+- `Key/Endpoint × model` column-grouped batch testing with configurable total concurrency
 - First-token latency measurement for performance insights
 - Model selection and filtering for targeted testing
 - API keys are not persisted and are cleared on refresh
@@ -69,9 +69,9 @@ Target OpenAI-compatible API
 2. Frontend calls `/api/models` once per key or once per Base URL
 3. Frontend merges the union of all successfully returned models
 4. User selects models and starts the batch check
-5. Frontend expands the listed `column × model` task matrix and calls `/api/check` with total concurrency control
+5. Frontend expands the listed `column × model` tasks in round-robin column order and calls `/api/check` with total concurrency control
 6. Backend proxies streaming requests to the target API
-7. Each cell displays availability, first-token latency, and failure reason
+7. Key or Endpoint groups display availability, first-token latency, and failure reason
 
 ## Getting Started
 
@@ -129,7 +129,7 @@ This project is optimized for Vercel deployment. The recommended path is importi
 2. In Vercel Dashboard, choose **Add New Project**.
 3. Import this GitHub repository.
 4. Keep the default build command `npm run build` and output directory `dist`.
-5. After deployment, smoke test model fetching and matrix checking on the production URL.
+5. After deployment, smoke test model fetching and batch checking on the production URL.
 
 You can also use the Vercel CLI:
 
@@ -144,7 +144,7 @@ The `vercel.json` configuration automatically:
 - Exposes `/api/models` and `/api/check` as serverless functions
 - Serves static assets from the build output
 
-The free Hobby plan has function invocation, duration, and resource limits. Matrix scheduling runs in the browser so each serverless invocation stays atomic. Start with total concurrency 3-5, and narrow the selected models before checking large matrices.
+The free Hobby plan has function invocation, duration, and resource limits. Batch scheduling runs in the browser so each serverless invocation stays atomic. Start with total concurrency 3-5, and narrow the selected models before checking large task sets.
 
 ### Self-Hosted
 
@@ -191,11 +191,11 @@ Calls each configured Base URL's `/models` endpoint with the same API key, then 
 ### Selective Testing
 Choose which models to test using the model picker with search and bulk selection controls. The picker is based on the model union across keys or endpoints.
 
-### Matrix Checking
-Checks only combinations that were listed by that key or endpoint's `/models` response. If a selected model is not listed for a column, that cell is marked as skipped and no `/api/check` request is sent for it.
+### Column-Grouped Checking
+Checks only combinations that were listed by that key or endpoint's `/models` response. If a selected model is not listed for a column, it is not shown in that column group and no `/api/check` request is sent for it.
 
 ### Total Concurrency Control
-Configure total concurrency (1-N parallel requests) to balance speed against Vercel Hobby limits and upstream rate limits.
+Configure total concurrency (1-N parallel requests) to balance speed against function limits and upstream rate limits. Batch tasks are queued in round-robin column order so multiple keys or endpoints show progress early.
 
 ### Performance Metrics
 Displays first-token latency for available models, color-coded by response speed:
@@ -241,10 +241,10 @@ This tool expects the target service to implement:
 - **Concurrency**: Higher values test faster but may trigger rate limits. Start with 3-5.
 - **Security**: API keys only live in current page memory. They are sent only to this app's proxy and the target upstream API during requests.
 - **Availability**: A model appearing in `/models` doesn't guarantee it's callable.
-- **Matrix semantics**: `Not listed in /models` means the key or endpoint omitted that model. The cell is skipped and no probe is executed for that combination.
+- **Column semantics**: Each group only shows models listed by that key or endpoint's `/models` response. Omitted combinations are hidden and no probe is executed for them.
 - **Latency**: First-token latency measures time to first streamed response chunk.
 - **Timeout**: Requests timeout after 30 seconds.
-- **Vercel Hobby**: Listed key/endpoint-model combinations determine the task count. The UI warns above 100 tasks but does not block advanced users.
+- **Large task sets**: Listed key/endpoint-model combinations determine the task count. The UI warns above 100 tasks but does not block advanced users.
 
 ## Development
 
@@ -261,7 +261,7 @@ This tool expects the target service to implement:
 
 ### Feature Notes
 
-The matrix behavior contract is documented in [`docs/multi-key-probe.md`](./docs/multi-key-probe.md).
+The column-grouped behavior contract is documented in [`docs/multi-key-probe.md`](./docs/multi-key-probe.md).
 
 ### TypeScript Configuration
 
