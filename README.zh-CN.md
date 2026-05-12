@@ -1,6 +1,6 @@
 # check-your-api
 
-面向 OpenAI 兼容 API 的多 Key 批量可用性检测工具，支持矩阵结果和实时延迟监控。
+面向 OpenAI 兼容 API 的多 Key、多端点批量可用性检测工具，支持矩阵结果和实时延迟监控。
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/Z1rconium/check-your-api)
 
@@ -15,12 +15,13 @@
 
 ## 简介
 
-`check-your-api` 是一个基于 Web 的工具，用于验证同一个 OpenAI 兼容 API 端点下的多枚 API Key。它会逐 Key 拉取模型列表，合并模型并集，再用矩阵方式检测每个 `Key × 模型` 组合的实际可用性，提供状态、失败原因和首字延迟反馈。
+`check-your-api` 是一个基于 Web 的工具，用于用两种模式验证 OpenAI 兼容 API：同一个 Base URL 下的多枚 API Key，或同一枚 API Key 下的多个 Base URL。它会逐列拉取模型列表，合并模型并集，再用矩阵方式检测已列出的 `列 × 模型` 组合，提供状态、失败原因和首字延迟反馈。
 
 **核心能力：**
 - 从任何 OpenAI 兼容端点逐 Key 获取模型列表
-- 合并多枚 Key 的模型并集
-- 可配置总并发数的 `Key × 模型` 矩阵检测
+- 使用同一枚 API Key 从多个 Base URL 获取模型列表
+- 合并多枚 Key 或多个端点的模型并集
+- 可配置总并发数的 `Key/Endpoint × 模型` 矩阵检测
 - 首字延迟测量，提供性能洞察
 - 模型选择和过滤，支持针对性测试
 - API Key 不持久化，刷新页面后清空
@@ -64,11 +65,11 @@
 - `api/*.ts` - Vercel 无服务器函数处理器
 
 **请求流程：**
-1. 用户配置 Base URL、多枚 API Key、总并发数和 prompt
-2. 前端对每枚 Key 分别调用 `/api/models`
+1. 用户选择多 Key 或多 Base URL 检测模式
+2. 前端对每枚 Key 或每个 Base URL 分别调用 `/api/models`
 3. 前端合并所有成功返回的模型并集
 4. 用户选择模型并启动批量检测
-5. 前端展开完整 `Key × 模型` 任务矩阵，并按总并发调用 `/api/check`
+5. 前端展开已列出的 `列 × 模型` 任务矩阵，并按总并发调用 `/api/check`
 6. 后端代理流式请求到目标 API
 7. 单元格级别显示可用性、首字延迟和失败原因
 
@@ -178,14 +179,20 @@ npm run start
 
 ## 核心功能
 
+### 检测模式
+使用 **多 Key 模式** 比较同一个 Base URL 下的多枚 API Key。使用 **多 Base URL 模式** 比较同一枚 API Key 在多个兼容端点下的表现。
+
 ### 多 Key 模型发现
 对每枚 API Key 分别调用配置端点的 `/models` 接口，合并所有成功返回的模型并集。单个 Key 拉取失败不会阻止其他 Key 继续工作。
 
+### 多端点模型发现
+对每个 Base URL 使用同一枚 API Key 调用 `/models` 接口，合并所有成功返回的模型并集。单个端点拉取失败不会阻止其他端点继续工作。
+
 ### 选择性测试
-使用模型选择器选择要测试的模型，支持搜索和批量选择控制。模型来源是多枚 Key 的模型并集。
+使用模型选择器选择要测试的模型，支持搜索和批量选择控制。模型来源是多枚 Key 或多个端点的模型并集。
 
 ### 矩阵检测
-检测范围会展开为完整 `Key × 模型` 矩阵。即使某个 Key 的 `/models` 没列出某个模型，应用仍会实际探测这个组合，避免遗漏隐藏权限或不准确的模型列表。
+检测范围只包含该 Key 或端点的 `/models` 已列出的组合。如果某个选中模型没有被某一列列出，该单元格会显示跳过，不会向 `/api/check` 发起请求。
 
 ### 总并发控制
 配置总并发数（1-N 个并行请求）以平衡速度、Vercel 免费额度和上游速率限制。
@@ -203,7 +210,7 @@ npm run start
 在所有模型中使用一致的测试提示词以获得可比较的结果。
 
 ### 非敏感表单持久化
-Base URL、并发数和 prompt 会保存到浏览器 localStorage。API Key 不会写入 localStorage，也不会被服务端保存、缓存或聚合。
+Base URL 输入、当前模式、并发数和 prompt 会保存到浏览器 localStorage。API Key 不会写入 localStorage，也不会被服务端保存、缓存或聚合。
 
 ## API 兼容性
 
@@ -234,10 +241,10 @@ Base URL、并发数和 prompt 会保存到浏览器 localStorage。API Key 不�
 - **并发数**：较高的值测试更快，但可能触发速率限制。建议从 3-5 开始。
 - **安全性**：API 密钥只保存在当前页面内存状态，不写入 localStorage；请求时只发送给本项目代理和目标上游 API。
 - **可用性**：模型出现在 `/models` 中并不保证它可以被调用。
-- **矩阵语义**：`未列入 /models` 只表示该 Key 的模型列表没有返回该模型，不代表检测会跳过。
+- **矩阵语义**：`未列入 /models` 表示该 Key 或端点没有返回该模型，该单元格会跳过，不会实际探测。
 - **延迟**：首字延迟测量到第一个流式响应块的时间。
 - **超时**：请求在 30 秒后超时。
-- **免费 Vercel**：Key 数乘以模型数就是探测任务数。超过 100 个任务时界面会提示风险，但不会硬性阻止。
+- **免费 Vercel**：实际列出的 Key/端点与模型组合决定探测任务数。超过 100 个任务时界面会提示风险，但不会硬性阻止。
 
 ## 开发
 
@@ -254,7 +261,7 @@ Base URL、并发数和 prompt 会保存到浏览器 localStorage。API Key 不�
 
 ### 功能说明
 
-多 Key 矩阵探测的行为契约见 [`docs/multi-key-probe.md`](./docs/multi-key-probe.md)。
+矩阵探测的行为契约见 [`docs/multi-key-probe.md`](./docs/multi-key-probe.md)。
 
 ### TypeScript 配置
 

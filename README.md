@@ -1,6 +1,6 @@
 # check-your-api
 
-Multi-key batch availability checker for OpenAI-compatible APIs with matrix results and real-time latency monitoring.
+Multi-key and multi-endpoint availability checker for OpenAI-compatible APIs with matrix results and real-time latency monitoring.
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/Z1rconium/check-your-api)
 
@@ -15,12 +15,13 @@ Multi-key batch availability checker for OpenAI-compatible APIs with matrix resu
 
 ## Overview
 
-`check-your-api` is a web-based tool for validating multiple API keys under the same OpenAI-compatible endpoint. It fetches models per key, merges the model union, then checks every `Key × model` combination as a matrix with status, failure reason, and first-token latency feedback.
+`check-your-api` is a web-based tool for validating OpenAI-compatible APIs in two comparison modes: one Base URL with multiple API keys, or one API key with multiple Base URLs. It fetches models per comparison column, merges the model union, then checks the listed `column × model` combinations as a matrix with status, failure reason, and first-token latency feedback.
 
 **Key capabilities:**
 - Fetch model lists per API key from any OpenAI-compatible endpoint
-- Merge model lists across keys
-- `Key × model` matrix testing with configurable total concurrency
+- Fetch model lists across multiple Base URLs with one API key
+- Merge model lists across keys or endpoints
+- `Key/Endpoint × model` matrix testing with configurable total concurrency
 - First-token latency measurement for performance insights
 - Model selection and filtering for targeted testing
 - API keys are not persisted and are cleared on refresh
@@ -64,11 +65,11 @@ Target OpenAI-compatible API
 - `api/*.ts` - Vercel serverless function handlers
 
 **Request flow:**
-1. User configures Base URL, multiple API keys, total concurrency, and prompt
-2. Frontend calls `/api/models` once per key
+1. User chooses a mode: multi-key or multi-Base-URL
+2. Frontend calls `/api/models` once per key or once per Base URL
 3. Frontend merges the union of all successfully returned models
 4. User selects models and starts the batch check
-5. Frontend expands the full `Key × model` task matrix and calls `/api/check` with total concurrency control
+5. Frontend expands the listed `column × model` task matrix and calls `/api/check` with total concurrency control
 6. Backend proxies streaming requests to the target API
 7. Each cell displays availability, first-token latency, and failure reason
 
@@ -178,14 +179,20 @@ The server listens on port 8787 by default (configurable via `PORT` environment 
 
 ## Key Features
 
+### Probe Modes
+Use **multi-key mode** to compare several API keys under the same Base URL. Use **multi-Base-URL mode** to compare several compatible endpoints with one API key.
+
 ### Multi-key Model Discovery
 Calls the configured endpoint's `/models` endpoint once per API key, then merges the union of all successfully returned models. A failed key does not block other keys from contributing models.
 
+### Multi-endpoint Model Discovery
+Calls each configured Base URL's `/models` endpoint with the same API key, then merges the union of all successfully returned models. A failed endpoint does not block other endpoints from contributing models.
+
 ### Selective Testing
-Choose which models to test using the model picker with search and bulk selection controls. The picker is based on the model union across keys.
+Choose which models to test using the model picker with search and bulk selection controls. The picker is based on the model union across keys or endpoints.
 
 ### Matrix Checking
-Checks the full `Key × model` matrix. Even if a key's `/models` response did not list a model, the application still probes that combination to catch hidden permissions or inaccurate model lists.
+Checks only combinations that were listed by that key or endpoint's `/models` response. If a selected model is not listed for a column, that cell is marked as skipped and no `/api/check` request is sent for it.
 
 ### Total Concurrency Control
 Configure total concurrency (1-N parallel requests) to balance speed against Vercel Hobby limits and upstream rate limits.
@@ -203,7 +210,7 @@ Filter results by status: All, Available, Unavailable, or Pending.
 Use consistent test prompts across all models for comparable results.
 
 ### Non-sensitive Form Persistence
-Base URL, concurrency, and prompt are saved to browser localStorage. API keys are not written to localStorage and are not stored, cached, or aggregated by the server.
+Base URL inputs, selected mode, concurrency, and prompt are saved to browser localStorage. API keys are not written to localStorage and are not stored, cached, or aggregated by the server.
 
 ## API Compatibility
 
@@ -234,10 +241,10 @@ This tool expects the target service to implement:
 - **Concurrency**: Higher values test faster but may trigger rate limits. Start with 3-5.
 - **Security**: API keys only live in current page memory. They are sent only to this app's proxy and the target upstream API during requests.
 - **Availability**: A model appearing in `/models` doesn't guarantee it's callable.
-- **Matrix semantics**: `Not listed in /models` means only that the key's model list omitted the model. The probe is still executed.
+- **Matrix semantics**: `Not listed in /models` means the key or endpoint omitted that model. The cell is skipped and no probe is executed for that combination.
 - **Latency**: First-token latency measures time to first streamed response chunk.
 - **Timeout**: Requests timeout after 30 seconds.
-- **Vercel Hobby**: Key count multiplied by model count is the task count. The UI warns above 100 tasks but does not block advanced users.
+- **Vercel Hobby**: Listed key/endpoint-model combinations determine the task count. The UI warns above 100 tasks but does not block advanced users.
 
 ## Development
 
@@ -254,7 +261,7 @@ This tool expects the target service to implement:
 
 ### Feature Notes
 
-The multi-key matrix behavior contract is documented in [`docs/multi-key-probe.md`](./docs/multi-key-probe.md).
+The matrix behavior contract is documented in [`docs/multi-key-probe.md`](./docs/multi-key-probe.md).
 
 ### TypeScript Configuration
 
