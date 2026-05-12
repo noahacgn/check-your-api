@@ -13,23 +13,26 @@ type ModelsResponse = {
 
 type CheckStatus = "idle" | "checking" | "available" | "unavailable" | "skipped";
 type ModelFetchStatus = "idle" | "loading" | "loaded" | "failed";
+type ProbeMode = "multiKey" | "multiBaseUrl";
 type ResultFilter = "all" | "available" | "unavailable" | "pending";
-type FieldName = "baseUrl" | "apiKeys" | "concurrency" | "prompt";
+type FieldName = "baseUrl" | "baseUrls" | "apiKey" | "apiKeys" | "concurrency" | "prompt";
 type FieldErrors = Partial<Record<FieldName, string>>;
 type InputElement = HTMLInputElement | HTMLTextAreaElement;
 
-type ApiKeyEntry = {
+type ProbeEntry = {
   id: string;
-  value: string;
+  mode: ProbeMode;
+  baseUrl: string;
+  apiKey: string;
   label: string;
-  maskedLabel: string;
+  displayLabel: string;
   modelFetchStatus: ModelFetchStatus;
   modelFetchError: string | null;
   modelIds: string[];
 };
 
 type MatrixResult = {
-  keyId: string;
+  columnId: string;
   modelId: string;
   status: CheckStatus;
   firstTokenLatencyMs: number | null;
@@ -37,7 +40,8 @@ type MatrixResult = {
 };
 
 type MatrixTask = {
-  keyId: string;
+  columnId: string;
+  baseUrl: string;
   apiKey: string;
   modelId: string;
 };
@@ -55,13 +59,26 @@ const PROXY_ERROR_MESSAGE =
 const FAST_FIRST_TOKEN_MS = 800;
 const MEDIUM_FIRST_TOKEN_MS = 2000;
 const LARGE_TASK_WARNING_THRESHOLD = 100;
-const fieldOrder: FieldName[] = ["baseUrl", "apiKeys", "concurrency", "prompt"];
+const fieldOrder: FieldName[] = [
+  "baseUrl",
+  "baseUrls",
+  "apiKey",
+  "apiKeys",
+  "concurrency",
+  "prompt"
+];
 
 const defaultForm = {
+  mode: "multiKey" as ProbeMode,
   baseUrl: "",
+  baseUrls: "",
   concurrency: "5",
   prompt: "Hi"
 };
+
+function isProbeMode(value: unknown): value is ProbeMode {
+  return value === "multiKey" || value === "multiBaseUrl";
+}
 
 function loadStoredForm() {
   const stored = localStorage.getItem(STORAGE_KEY);
@@ -76,7 +93,9 @@ function loadStoredForm() {
     };
 
     const nextForm = {
+      mode: isProbeMode(parsed.mode) ? parsed.mode : "multiKey",
       baseUrl: parsed.baseUrl ?? "",
+      baseUrls: parsed.baseUrls ?? "",
       concurrency: parsed.concurrency ?? "5",
       prompt: parsed.prompt ?? "Hi"
     };
@@ -113,6 +132,44 @@ function parseApiKeys(value: string) {
   return apiKeys;
 }
 
+function parseBaseUrls(value: string) {
+  const seen = new Set<string>();
+  const baseUrls: string[] = [];
+  let duplicateCount = 0;
+  let invalidCount = 0;
+  let nonEmptyCount = 0;
+
+  for (const rawLine of value.split(/\r?\n/)) {
+    const baseUrl = normalizeBaseUrl(rawLine);
+
+    if (!baseUrl) {
+      continue;
+    }
+
+    nonEmptyCount += 1;
+
+    if (!isValidUrl(baseUrl)) {
+      invalidCount += 1;
+      continue;
+    }
+
+    if (seen.has(baseUrl)) {
+      duplicateCount += 1;
+      continue;
+    }
+
+    seen.add(baseUrl);
+    baseUrls.push(baseUrl);
+  }
+
+  return {
+    baseUrls,
+    duplicateCount,
+    invalidCount,
+    nonEmptyCount
+  };
+}
+
 function maskApiKey(apiKey: string) {
   if (apiKey.length <= 6) {
     return "******";
@@ -122,15 +179,46 @@ function maskApiKey(apiKey: string) {
   return `${prefix}...${apiKey.slice(-4)}`;
 }
 
-function createApiKeyEntries(apiKeys: string[]): ApiKeyEntry[] {
+function getBaseUrlDisplayLabel(baseUrl: string) {
+  try {
+    const url = new URL(baseUrl);
+    const pathname = url.pathname.replace(/\/+$/, "");
+
+    return `${url.host}${pathname && pathname !== "/" ? pathname : ""}`;
+  } catch {
+    return baseUrl;
+  }
+}
+
+function createApiKeyEntries(apiKeys: string[], baseUrl: string): ProbeEntry[] {
   return apiKeys.map((apiKey, index) => {
     const label = `Key ${index + 1}`;
 
     return {
       id: `key-${index + 1}`,
-      value: apiKey,
+      mode: "multiKey",
+      baseUrl,
+      apiKey,
       label,
-      maskedLabel: `${label} · ${maskApiKey(apiKey)}`,
+      displayLabel: `${label} · ${maskApiKey(apiKey)}`,
+      modelFetchStatus: "idle",
+      modelFetchError: null,
+      modelIds: []
+    };
+  });
+}
+
+function createBaseUrlEntries(baseUrls: string[], apiKey: string): ProbeEntry[] {
+  return baseUrls.map((baseUrl, index) => {
+    const label = `Endpoint ${index + 1}`;
+
+    return {
+      id: `endpoint-${index + 1}`,
+      mode: "multiBaseUrl",
+      baseUrl,
+      apiKey,
+      label,
+      displayLabel: `${label} · ${getBaseUrlDisplayLabel(baseUrl)}`,
       modelFetchStatus: "idle",
       modelFetchError: null,
       modelIds: []
@@ -248,15 +336,15 @@ function getFetchStatusLabel(status: ModelFetchStatus) {
   return "未拉取";
 }
 
-function getMatrixResultKey(keyId: string, modelId: string) {
-  return `${keyId}::${modelId}`;
+function getMatrixResultKey(columnId: string, modelId: string) {
+  return `${columnId}::${modelId}`;
 }
 
-function isModelListedByKey(entry: ApiKeyEntry, modelId: string) {
+function isModelListedByEntry(entry: ProbeEntry, modelId: string) {
   return entry.modelIds.includes(modelId);
 }
 
-function getRawApiKeyLineCount(value: string) {
+function getRawNonEmptyLineCount(value: string) {
   return value.split(/\r?\n/).filter((line) => line.trim()).length;
 }
 
@@ -313,8 +401,9 @@ async function requestProxy<T>(path: string, body: Record<string, unknown>) {
 
 export default function App() {
   const [form, setForm] = useState(loadStoredForm);
+  const [apiKeyInput, setApiKeyInput] = useState("");
   const [apiKeysInput, setApiKeysInput] = useState("");
-  const [apiKeyEntries, setApiKeyEntries] = useState<ApiKeyEntry[]>([]);
+  const [probeEntries, setProbeEntries] = useState<ProbeEntry[]>([]);
   const [models, setModels] = useState<Model[]>([]);
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
   const [fetchingModels, setFetchingModels] = useState(false);
@@ -327,6 +416,8 @@ export default function App() {
   const [matrixResults, setMatrixResults] = useState<Record<string, MatrixResult>>({});
   const fieldRefs = useRef<Record<FieldName, InputElement | null>>({
     baseUrl: null,
+    baseUrls: null,
+    apiKey: null,
     apiKeys: null,
     concurrency: null,
     prompt: null
@@ -335,11 +426,18 @@ export default function App() {
   const checkRunId = useRef(0);
 
   const resolvedBaseUrl = useMemo(() => normalizeBaseUrl(form.baseUrl), [form.baseUrl]);
+  const parsedBaseUrls = useMemo(() => parseBaseUrls(form.baseUrls), [form.baseUrls]);
+  const resolvedApiKey = useMemo(() => apiKeyInput.trim(), [apiKeyInput]);
   const parsedApiKeys = useMemo(() => parseApiKeys(apiKeysInput), [apiKeysInput]);
   const duplicateKeyCount = useMemo(
-    () => Math.max(0, getRawApiKeyLineCount(apiKeysInput) - parsedApiKeys.length),
+    () => Math.max(0, getRawNonEmptyLineCount(apiKeysInput) - parsedApiKeys.length),
     [apiKeysInput, parsedApiKeys.length]
   );
+  const isMultiBaseUrlMode = form.mode === "multiBaseUrl";
+  const activeColumnLabel = isMultiBaseUrlMode ? "Endpoint" : "Key";
+  const pendingColumnCount = isMultiBaseUrlMode
+    ? parsedBaseUrls.baseUrls.length
+    : parsedApiKeys.length;
   const selectedModelIdSet = useMemo(() => new Set(selectedModelIds), [selectedModelIds]);
   const visibleModels = useMemo(
     () => models.filter((model) => selectedModelIdSet.has(model.id)),
@@ -347,15 +445,15 @@ export default function App() {
   );
   const visibleProbeablePairs = useMemo(
     () =>
-      apiKeyEntries.flatMap((entry) =>
+      probeEntries.flatMap((entry) =>
         visibleModels
-          .filter((model) => isModelListedByKey(entry, model.id))
+          .filter((model) => isModelListedByEntry(entry, model.id))
           .map((model) => ({
-            keyId: entry.id,
+            columnId: entry.id,
             modelId: model.id
           }))
       ),
-    [apiKeyEntries, visibleModels]
+    [probeEntries, visibleModels]
   );
   const filteredPickerModels = useMemo(
     () =>
@@ -371,7 +469,7 @@ export default function App() {
   const visibleResultValues = useMemo(
     () =>
       visibleProbeablePairs
-        .map((pair) => matrixResults[getMatrixResultKey(pair.keyId, pair.modelId)])
+        .map((pair) => matrixResults[getMatrixResultKey(pair.columnId, pair.modelId)])
         .filter((result): result is MatrixResult => Boolean(result)),
     [matrixResults, visibleProbeablePairs]
   );
@@ -390,10 +488,10 @@ export default function App() {
   const checkedCount = availableCount + unavailableCount;
   const pendingCount = Math.max(0, totalTaskCount - checkedCount);
   const progressValue = totalTaskCount > 0 ? checkedCount / totalTaskCount : 0;
-  const loadedKeyCount = apiKeyEntries.filter(
+  const loadedEntryCount = probeEntries.filter(
     (entry) => entry.modelFetchStatus === "loaded"
   ).length;
-  const failedKeyCount = apiKeyEntries.filter(
+  const failedEntryCount = probeEntries.filter(
     (entry) => entry.modelFetchStatus === "failed"
   ).length;
   const scaleWarning =
@@ -401,11 +499,11 @@ export default function App() {
       ? `本次会产生 ${totalTaskCount} 个探测任务。免费 Vercel 建议先降低模型数或并发数。`
       : "";
 
-  const getResultForCell = (keyId: string, modelId: string) =>
-    matrixResults[getMatrixResultKey(keyId, modelId)];
+  const getResultForCell = (columnId: string, modelId: string) =>
+    matrixResults[getMatrixResultKey(columnId, modelId)];
 
-  const getCellStatus = (entry: ApiKeyEntry, modelId: string): CheckStatus => {
-    if (!isModelListedByKey(entry, modelId)) {
+  const getCellStatus = (entry: ProbeEntry, modelId: string): CheckStatus => {
+    if (!isModelListedByEntry(entry, modelId)) {
       return "skipped";
     }
 
@@ -413,7 +511,7 @@ export default function App() {
   };
 
   const getModelStatuses = (modelId: string) =>
-    apiKeyEntries.map((entry) => getCellStatus(entry, modelId));
+    probeEntries.map((entry) => getCellStatus(entry, modelId));
 
   const filterCounts: Record<ResultFilter, number> = {
     all: visibleModels.length,
@@ -444,7 +542,7 @@ export default function App() {
     return visibleModels.filter((model) =>
       getModelStatuses(model.id).some((status) => status === resultFilter)
     );
-  }, [matrixResults, resultFilter, visibleModels, apiKeyEntries]);
+  }, [matrixResults, resultFilter, visibleModels, probeEntries]);
 
   const statusHeadline = useMemo(() => {
     if (checkingModels) {
@@ -452,7 +550,7 @@ export default function App() {
     }
 
     if (fetchingModels) {
-      return `正在拉取 ${loadedKeyCount + failedKeyCount}/${apiKeyEntries.length}`;
+      return `正在拉取 ${loadedEntryCount + failedEntryCount}/${probeEntries.length}`;
     }
 
     if (models.length > 0) {
@@ -461,23 +559,31 @@ export default function App() {
 
     return "等待连接 API";
   }, [
-    apiKeyEntries.length,
     checkedCount,
     checkingModels,
-    failedKeyCount,
+    failedEntryCount,
     fetchingModels,
-    loadedKeyCount,
+    loadedEntryCount,
     models.length,
+    probeEntries.length,
     totalTaskCount
   ]);
 
   const statusDescription = useMemo(() => {
+    if (isMultiBaseUrlMode) {
+      if (parsedBaseUrls.baseUrls.length > 0) {
+        return `Endpoint：${parsedBaseUrls.baseUrls.length} 个 Base URL`;
+      }
+
+      return "填写一枚 API Key，并逐行输入多个 Base URL。";
+    }
+
     if (resolvedBaseUrl) {
       return `Endpoint：${resolvedBaseUrl}`;
     }
 
     return "填写同一个 Base URL 下的多枚 API Key。";
-  }, [resolvedBaseUrl]);
+  }, [isMultiBaseUrlMode, parsedBaseUrls.baseUrls.length, resolvedBaseUrl]);
 
   useEffect(() => {
     if (!showModelPicker) {
@@ -521,7 +627,7 @@ export default function App() {
   const resetFetchedData = () => {
     modelFetchRunId.current += 1;
     checkRunId.current += 1;
-    setApiKeyEntries([]);
+    setProbeEntries([]);
     setModels([]);
     setSelectedModelIds([]);
     setMatrixResults({});
@@ -530,7 +636,24 @@ export default function App() {
     setResultFilter("all");
   };
 
-  const updateFormField = (field: keyof typeof defaultForm, value: string) => {
+  const updateMode = (mode: ProbeMode) => {
+    if (form.mode === mode) {
+      return;
+    }
+
+    persistForm({
+      ...form,
+      mode
+    });
+    setFieldErrors({});
+    setFetchError("");
+    resetFetchedData();
+  };
+
+  const updateFormField = (
+    field: "baseUrl" | "baseUrls" | "concurrency" | "prompt",
+    value: string
+  ) => {
     persistForm({
       ...form,
       [field]: value
@@ -538,9 +661,16 @@ export default function App() {
     clearFieldError(field);
     setFetchError("");
 
-    if (field === "baseUrl") {
+    if (field === "baseUrl" || field === "baseUrls") {
       resetFetchedData();
     }
+  };
+
+  const updateApiKeyField = (value: string) => {
+    setApiKeyInput(value);
+    clearFieldError("apiKey");
+    setFetchError("");
+    resetFetchedData();
   };
 
   const updateApiKeysField = (value: string) => {
@@ -565,14 +695,26 @@ export default function App() {
   const validateConnectionFields = () => {
     const nextErrors: FieldErrors = {};
 
-    if (!resolvedBaseUrl) {
-      nextErrors.baseUrl = "Base URL 不能为空。";
-    } else if (!isValidUrl(resolvedBaseUrl)) {
-      nextErrors.baseUrl = "Base URL 格式不对，示例：https://example.com/v1";
-    }
+    if (isMultiBaseUrlMode) {
+      if (!resolvedApiKey) {
+        nextErrors.apiKey = "API Key 不能为空。";
+      }
 
-    if (parsedApiKeys.length === 0) {
-      nextErrors.apiKeys = "至少输入一枚 API Key，每行一枚。";
+      if (parsedBaseUrls.nonEmptyCount === 0) {
+        nextErrors.baseUrls = "至少输入一个 Base URL，每行一个。";
+      } else if (parsedBaseUrls.invalidCount > 0) {
+        nextErrors.baseUrls = "Base URL 列表包含无效地址，示例：https://example.com/v1";
+      }
+    } else {
+      if (!resolvedBaseUrl) {
+        nextErrors.baseUrl = "Base URL 不能为空。";
+      } else if (!isValidUrl(resolvedBaseUrl)) {
+        nextErrors.baseUrl = "Base URL 格式不对，示例：https://example.com/v1";
+      }
+
+      if (parsedApiKeys.length === 0) {
+        nextErrors.apiKeys = "至少输入一枚 API Key，每行一枚。";
+      }
     }
 
     return nextErrors;
@@ -599,18 +741,18 @@ export default function App() {
   };
 
   const updateMatrixResult = (
-    keyId: string,
+    columnId: string,
     modelId: string,
     patch: Partial<MatrixResult> & Pick<MatrixResult, "status">
   ) => {
     setMatrixResults((current) => {
-      const resultKey = getMatrixResultKey(keyId, modelId);
+      const resultKey = getMatrixResultKey(columnId, modelId);
 
       return {
         ...current,
         [resultKey]: {
           ...current[resultKey],
-          keyId,
+          columnId,
           modelId,
           firstTokenLatencyMs: null,
           errorMessage: null,
@@ -639,25 +781,30 @@ export default function App() {
     const runId = modelFetchRunId.current + 1;
     modelFetchRunId.current = runId;
     checkRunId.current += 1;
-    const nextKeyEntries = createApiKeyEntries(parsedApiKeys).map((entry) => ({
+    const nextProbeEntries = (
+      isMultiBaseUrlMode
+        ? createBaseUrlEntries(parsedBaseUrls.baseUrls, resolvedApiKey)
+        : createApiKeyEntries(parsedApiKeys, resolvedBaseUrl)
+    ).map((entry) => ({
       ...entry,
       modelFetchStatus: "loading" as const
     }));
     const modelsById = new Map<string, Model>();
-    let successfulKeyCount = 0;
+    let successfulEntryCount = 0;
     let failedFetchCount = 0;
+    const entryLabel = isMultiBaseUrlMode ? "Base URL" : "API Key";
 
     setFetchingModels(true);
     setFetchError("");
     setFieldErrors({});
-    setApiKeyEntries(nextKeyEntries);
+    setProbeEntries(nextProbeEntries);
     setModels([]);
     setSelectedModelIds([]);
     setMatrixResults({});
     setResultFilter("all");
 
     try {
-      const queue = [...nextKeyEntries];
+      const queue = [...nextProbeEntries];
       const workerCount = Math.min(parseConcurrency(form.concurrency) ?? 1, queue.length);
 
       await Promise.all(
@@ -671,8 +818,8 @@ export default function App() {
 
             try {
               const payload = await requestProxy<ModelsResponse>("/api/models", {
-                baseUrl: resolvedBaseUrl,
-                apiKey: entry.value
+                baseUrl: entry.baseUrl,
+                apiKey: entry.apiKey
               });
               const nextModels =
                 isModelsResponse(payload) && Array.isArray(payload.data)
@@ -681,7 +828,7 @@ export default function App() {
                     )
                   : [];
 
-              successfulKeyCount += 1;
+              successfulEntryCount += 1;
 
               for (const model of nextModels) {
                 if (!modelsById.has(model.id)) {
@@ -693,7 +840,7 @@ export default function App() {
                 return;
               }
 
-              setApiKeyEntries((current) =>
+              setProbeEntries((current) =>
                 current.map((currentEntry) =>
                   currentEntry.id === entry.id
                     ? {
@@ -712,7 +859,7 @@ export default function App() {
                 return;
               }
 
-              setApiKeyEntries((current) =>
+              setProbeEntries((current) =>
                 current.map((currentEntry) =>
                   currentEntry.id === entry.id
                     ? {
@@ -742,12 +889,12 @@ export default function App() {
       setShowModelPicker(false);
       setModelSearchQuery("");
 
-      if (successfulKeyCount === 0) {
-        setFetchError("所有 API Key 都没能拉取模型。请检查 Base URL 或密钥权限。");
+      if (successfulEntryCount === 0) {
+        setFetchError(`所有 ${entryLabel} 都没能拉取模型。请检查地址或密钥权限。`);
       } else if (mergedModels.length === 0) {
         setFetchError("接口返回成功，但没拿到任何模型。");
       } else if (failedFetchCount > 0) {
-        setFetchError("部分 API Key 拉取模型失败，仍可继续检测已合并的模型。");
+        setFetchError(`部分 ${entryLabel} 拉取模型失败，仍可继续检测已合并的模型。`);
       }
     } finally {
       if (modelFetchRunId.current === runId) {
@@ -756,9 +903,9 @@ export default function App() {
     }
   };
 
-  const checkOneModel = async (apiKey: string, modelId: string) =>
+  const checkOneModel = async (baseUrl: string, apiKey: string, modelId: string) =>
     requestProxy<CheckResponse>("/api/check", {
-      baseUrl: resolvedBaseUrl,
+      baseUrl,
       apiKey,
       model: modelId,
       prompt: form.prompt.trim()
@@ -779,7 +926,7 @@ export default function App() {
       return;
     }
 
-    if (apiKeyEntries.length === 0 || models.length === 0) {
+    if (probeEntries.length === 0 || models.length === 0) {
       setFetchError("先获取模型，再开始矩阵检测。");
       return;
     }
@@ -789,18 +936,19 @@ export default function App() {
       return;
     }
 
-    const tasks: MatrixTask[] = apiKeyEntries.flatMap((entry) =>
+    const tasks: MatrixTask[] = probeEntries.flatMap((entry) =>
       visibleModels
-        .filter((model) => isModelListedByKey(entry, model.id))
+        .filter((model) => isModelListedByEntry(entry, model.id))
         .map((model) => ({
-          keyId: entry.id,
-          apiKey: entry.value,
+          columnId: entry.id,
+          baseUrl: entry.baseUrl,
+          apiKey: entry.apiKey,
           modelId: model.id
         }))
     );
 
     if (tasks.length === 0) {
-      setFetchError("当前选中的模型没有匹配到可探测的 API Key。");
+      setFetchError(`当前选中的模型没有匹配到可探测的 ${activeColumnLabel}。`);
       setFieldErrors({});
       setMatrixResults({});
       return;
@@ -815,9 +963,9 @@ export default function App() {
     setMatrixResults(
       Object.fromEntries(
         tasks.map((task) => [
-          getMatrixResultKey(task.keyId, task.modelId),
+          getMatrixResultKey(task.columnId, task.modelId),
           {
-            keyId: task.keyId,
+            columnId: task.columnId,
             modelId: task.modelId,
             status: "idle",
             firstTokenLatencyMs: null,
@@ -840,20 +988,20 @@ export default function App() {
               return;
             }
 
-            updateMatrixResult(task.keyId, task.modelId, {
+            updateMatrixResult(task.columnId, task.modelId, {
               status: "checking",
               firstTokenLatencyMs: null,
               errorMessage: null
             });
 
             try {
-              const result = await checkOneModel(task.apiKey, task.modelId);
+              const result = await checkOneModel(task.baseUrl, task.apiKey, task.modelId);
 
               if (checkRunId.current !== runId) {
                 return;
               }
 
-              updateMatrixResult(task.keyId, task.modelId, {
+              updateMatrixResult(task.columnId, task.modelId, {
                 status: "available",
                 firstTokenLatencyMs: result.firstTokenLatencyMs,
                 errorMessage: null
@@ -863,7 +1011,7 @@ export default function App() {
                 return;
               }
 
-              updateMatrixResult(task.keyId, task.modelId, {
+              updateMatrixResult(task.columnId, task.modelId, {
                 status: "unavailable",
                 firstTokenLatencyMs: null,
                 errorMessage: getErrorMessage(error)
@@ -887,6 +1035,21 @@ export default function App() {
     );
   };
 
+  const heroTitle = isMultiBaseUrlMode ? "多端点 API 探测" : "多 Key API 探测";
+  const heroSubtitle = isMultiBaseUrlMode
+    ? "单密钥多端点、模型并集、矩阵检测，直接看同一枚 Key 在不同 Base URL 下的可用性和首字延迟。"
+    : "同端点多密钥、模型并集、矩阵检测，直接看每个 Key 对每个模型的可用性和首字延迟。";
+  const configDescription = isMultiBaseUrlMode
+    ? "同一枚 API Key 下，每行输入一个 Base URL。"
+    : "同一个 Base URL 下，每行输入一枚 API Key。";
+  const columnCount = probeEntries.length || pendingColumnCount;
+  const columnStatusLabel = isMultiBaseUrlMode ? "Base URL 拉取状态" : "API Key 拉取状态";
+  const emptyColumnLabel = isMultiBaseUrlMode ? "待拉取 Endpoint" : "待拉取 Key";
+  const resultsColumnLabel = isMultiBaseUrlMode ? "Base URL" : "API Key";
+  const modelPickerDescription = isMultiBaseUrlMode
+    ? "模型列表来自所有成功拉取的 Base URL 的并集。"
+    : "模型列表来自所有成功拉取的 Key 的并集。";
+
   return (
     <div className="shell">
       <a className="skip-link" href="#main-content">
@@ -896,10 +1059,8 @@ export default function App() {
       <header className="hero">
         <div className="hero-copy">
           <p className="eyebrow">check-your-api</p>
-          <h1>多 Key API 探测</h1>
-          <p className="subtitle">
-            同端点多密钥、模型并集、矩阵检测，直接看每个 Key 对每个模型的可用性和首字延迟。
-          </p>
+          <h1>{heroTitle}</h1>
+          <p className="subtitle">{heroSubtitle}</p>
         </div>
 
         <aside className="hero-status" aria-live="polite">
@@ -907,7 +1068,9 @@ export default function App() {
           <strong>{statusHeadline}</strong>
           <p>{statusDescription}</p>
           <div className="hero-meta">
-            <span>Key {apiKeyEntries.length || parsedApiKeys.length}</span>
+            <span>
+              {activeColumnLabel} {columnCount}
+            </span>
             <span>模型 {visibleModels.length}</span>
             <span>任务 {totalTaskCount}</span>
           </div>
@@ -920,73 +1083,170 @@ export default function App() {
             <div className="section-head section-head-tight">
               <div>
                 <h2>连接配置</h2>
-                <p>同一个 Base URL 下，每行输入一枚 API Key。</p>
+                <p>{configDescription}</p>
               </div>
             </div>
 
             <form className="form" onSubmit={handleSubmit} noValidate>
-              <label className="field" htmlFor="base-url">
-                <span>API Base URL</span>
-                <input
-                  ref={(node) => {
-                    fieldRefs.current.baseUrl = node;
-                  }}
-                  id="base-url"
-                  name="baseUrl"
-                  type="url"
-                  inputMode="url"
-                  autoComplete="off"
-                  autoCorrect="off"
-                  autoCapitalize="off"
-                  spellCheck={false}
+              <div className="mode-switch" role="tablist" aria-label="检测模式">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={!isMultiBaseUrlMode}
+                  className={`mode-tab${!isMultiBaseUrlMode ? " is-active" : ""}`}
                   disabled={fetchingModels || checkingModels}
-                  aria-invalid={Boolean(fieldErrors.baseUrl)}
-                  aria-describedby="base-url-help base-url-error"
-                  placeholder="https://example.com/v1"
-                  value={form.baseUrl}
-                  onChange={(event) => updateFormField("baseUrl", event.target.value)}
-                />
-                <small className="field-help" id="base-url-help">
-                  OpenAI 兼容地址，通常以 `/v1` 结尾。
-                </small>
-                {fieldErrors.baseUrl ? (
-                  <small className="field-error" id="base-url-error" role="alert">
-                    {fieldErrors.baseUrl}
-                  </small>
-                ) : null}
-              </label>
+                  onClick={() => updateMode("multiKey")}
+                >
+                  多 Key
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={isMultiBaseUrlMode}
+                  className={`mode-tab${isMultiBaseUrlMode ? " is-active" : ""}`}
+                  disabled={fetchingModels || checkingModels}
+                  onClick={() => updateMode("multiBaseUrl")}
+                >
+                  多 Base URL
+                </button>
+              </div>
 
-              <label className="field" htmlFor="api-keys">
-                <span>API Keys</span>
-                <textarea
-                  ref={(node) => {
-                    fieldRefs.current.apiKeys = node;
-                  }}
-                  id="api-keys"
-                  name="apiKeys"
-                  rows={6}
-                  autoComplete="off"
-                  autoCorrect="off"
-                  autoCapitalize="off"
-                  spellCheck={false}
-                  disabled={fetchingModels || checkingModels}
-                  aria-invalid={Boolean(fieldErrors.apiKeys)}
-                  aria-describedby="api-keys-help api-keys-error"
-                  placeholder={"sk-...\nsk-..."}
-                  value={apiKeysInput}
-                  onChange={(event) => updateApiKeysField(event.target.value)}
-                />
-                <small className="field-help" id="api-keys-help">
-                  已识别 {parsedApiKeys.length} 枚 Key
-                  {duplicateKeyCount > 0 ? `，已忽略 ${duplicateKeyCount} 个重复项` : ""}。
-                  密钥只保存在当前页面状态，刷新后会清空。
-                </small>
-                {fieldErrors.apiKeys ? (
-                  <small className="field-error" id="api-keys-error" role="alert">
-                    {fieldErrors.apiKeys}
-                  </small>
-                ) : null}
-              </label>
+              {isMultiBaseUrlMode ? (
+                <>
+                  <label className="field" htmlFor="api-key">
+                    <span>API Key</span>
+                    <input
+                      ref={(node) => {
+                        fieldRefs.current.apiKey = node;
+                      }}
+                      id="api-key"
+                      name="apiKey"
+                      type="password"
+                      autoComplete="off"
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                      spellCheck={false}
+                      disabled={fetchingModels || checkingModels}
+                      aria-invalid={Boolean(fieldErrors.apiKey)}
+                      aria-describedby="api-key-help api-key-error"
+                      placeholder="sk-..."
+                      value={apiKeyInput}
+                      onChange={(event) => updateApiKeyField(event.target.value)}
+                    />
+                    <small className="field-help" id="api-key-help">
+                      密钥只保存在当前页面状态，刷新后会清空。
+                    </small>
+                    {fieldErrors.apiKey ? (
+                      <small className="field-error" id="api-key-error" role="alert">
+                        {fieldErrors.apiKey}
+                      </small>
+                    ) : null}
+                  </label>
+
+                  <label className="field" htmlFor="base-urls">
+                    <span>API Base URLs</span>
+                    <textarea
+                      ref={(node) => {
+                        fieldRefs.current.baseUrls = node;
+                      }}
+                      id="base-urls"
+                      name="baseUrls"
+                      rows={6}
+                      inputMode="url"
+                      autoComplete="off"
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                      spellCheck={false}
+                      disabled={fetchingModels || checkingModels}
+                      aria-invalid={Boolean(fieldErrors.baseUrls)}
+                      aria-describedby="base-urls-help base-urls-error"
+                      placeholder={"https://api.openai.com/v1\nhttps://example.com/v1"}
+                      value={form.baseUrls}
+                      onChange={(event) => updateFormField("baseUrls", event.target.value)}
+                    />
+                    <small className="field-help" id="base-urls-help">
+                      已识别 {parsedBaseUrls.baseUrls.length} 个 URL
+                      {parsedBaseUrls.duplicateCount > 0
+                        ? `，已忽略 ${parsedBaseUrls.duplicateCount} 个重复项`
+                        : ""}
+                      {parsedBaseUrls.invalidCount > 0
+                        ? `，有 ${parsedBaseUrls.invalidCount} 个格式错误`
+                        : ""}
+                      。通常以 `/v1` 结尾。
+                    </small>
+                    {fieldErrors.baseUrls ? (
+                      <small className="field-error" id="base-urls-error" role="alert">
+                        {fieldErrors.baseUrls}
+                      </small>
+                    ) : null}
+                  </label>
+                </>
+              ) : (
+                <>
+                  <label className="field" htmlFor="base-url">
+                    <span>API Base URL</span>
+                    <input
+                      ref={(node) => {
+                        fieldRefs.current.baseUrl = node;
+                      }}
+                      id="base-url"
+                      name="baseUrl"
+                      type="url"
+                      inputMode="url"
+                      autoComplete="off"
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                      spellCheck={false}
+                      disabled={fetchingModels || checkingModels}
+                      aria-invalid={Boolean(fieldErrors.baseUrl)}
+                      aria-describedby="base-url-help base-url-error"
+                      placeholder="https://example.com/v1"
+                      value={form.baseUrl}
+                      onChange={(event) => updateFormField("baseUrl", event.target.value)}
+                    />
+                    <small className="field-help" id="base-url-help">
+                      OpenAI 兼容地址，通常以 `/v1` 结尾。
+                    </small>
+                    {fieldErrors.baseUrl ? (
+                      <small className="field-error" id="base-url-error" role="alert">
+                        {fieldErrors.baseUrl}
+                      </small>
+                    ) : null}
+                  </label>
+
+                  <label className="field" htmlFor="api-keys">
+                    <span>API Keys</span>
+                    <textarea
+                      ref={(node) => {
+                        fieldRefs.current.apiKeys = node;
+                      }}
+                      id="api-keys"
+                      name="apiKeys"
+                      rows={6}
+                      autoComplete="off"
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                      spellCheck={false}
+                      disabled={fetchingModels || checkingModels}
+                      aria-invalid={Boolean(fieldErrors.apiKeys)}
+                      aria-describedby="api-keys-help api-keys-error"
+                      placeholder={"sk-...\nsk-..."}
+                      value={apiKeysInput}
+                      onChange={(event) => updateApiKeysField(event.target.value)}
+                    />
+                    <small className="field-help" id="api-keys-help">
+                      已识别 {parsedApiKeys.length} 枚 Key
+                      {duplicateKeyCount > 0 ? `，已忽略 ${duplicateKeyCount} 个重复项` : ""}。
+                      密钥只保存在当前页面状态，刷新后会清空。
+                    </small>
+                    {fieldErrors.apiKeys ? (
+                      <small className="field-error" id="api-keys-error" role="alert">
+                        {fieldErrors.apiKeys}
+                      </small>
+                    ) : null}
+                  </label>
+                </>
+              )}
 
               <div className="control-row">
                 <label className="field field-compact" htmlFor="concurrency">
@@ -1078,8 +1338,8 @@ export default function App() {
           <aside className="summary-column" aria-live="polite">
             <dl className="stats-strip" aria-label="检测统计">
               <div className="stat-pill">
-                <dt>Key</dt>
-                <dd>{apiKeyEntries.length || parsedApiKeys.length}</dd>
+                <dt>{activeColumnLabel}</dt>
+                <dd>{columnCount}</dd>
               </div>
               <div className="stat-pill">
                 <dt>模型</dt>
@@ -1091,17 +1351,17 @@ export default function App() {
               </div>
             </dl>
 
-            <div className="key-list" aria-label="API Key 拉取状态">
-              {apiKeyEntries.length === 0 ? (
+            <div className="key-list" aria-label={columnStatusLabel}>
+              {probeEntries.length === 0 ? (
                 <div className="key-empty">
-                  <strong>{parsedApiKeys.length || 0}</strong>
-                  <span>待拉取 Key</span>
+                  <strong>{pendingColumnCount}</strong>
+                  <span>{emptyColumnLabel}</span>
                 </div>
               ) : (
-                apiKeyEntries.map((entry) => (
+                probeEntries.map((entry) => (
                   <article className="key-card" key={entry.id}>
                     <div>
-                      <strong>{entry.maskedLabel}</strong>
+                      <strong>{entry.displayLabel}</strong>
                       <span>{entry.modelIds.length} 个模型</span>
                     </div>
                     <span className={`fetch-badge fetch-${entry.modelFetchStatus}`}>
@@ -1133,7 +1393,9 @@ export default function App() {
           <div className="section-head results-head">
             <div>
               <h2>探测矩阵</h2>
-              <p>行是模型，列是 API Key；每个单元格独立展示状态、延迟和失败原因。</p>
+              <p>
+                行是模型，列是 {resultsColumnLabel}；每个单元格独立展示状态、延迟和失败原因。
+              </p>
             </div>
 
             <div className="filter-group" role="tablist" aria-label="结果过滤">
@@ -1190,9 +1452,9 @@ export default function App() {
                   <thead>
                     <tr>
                       <th scope="col">模型</th>
-                      {apiKeyEntries.map((entry) => (
+                      {probeEntries.map((entry) => (
                         <th key={entry.id} scope="col">
-                          {entry.maskedLabel}
+                          {entry.displayLabel}
                         </th>
                       ))}
                     </tr>
@@ -1206,11 +1468,11 @@ export default function App() {
                             {model.owned_by ? `owned by ${model.owned_by}` : "未提供所有者信息"}
                           </small>
                         </th>
-                        {apiKeyEntries.map((entry) => {
+                        {probeEntries.map((entry) => {
                           const result = getResultForCell(entry.id, model.id);
                           const status = getCellStatus(entry, model.id);
                           const latencyLevel = getLatencyLevel(result?.firstTokenLatencyMs ?? null);
-                          const listedByKey = isModelListedByKey(entry, model.id);
+                          const listedByEntry = isModelListedByEntry(entry, model.id);
 
                           return (
                             <td key={entry.id}>
@@ -1228,7 +1490,7 @@ export default function App() {
                                 {status === "unavailable" && result?.errorMessage ? (
                                   <span className="failure-reason">{result.errorMessage}</span>
                                 ) : null}
-                                {!listedByKey ? (
+                                {!listedByEntry ? (
                                   <span className="not-listed">未列入 /models</span>
                                 ) : null}
                               </div>
@@ -1242,22 +1504,22 @@ export default function App() {
               </div>
 
               <div className="mobile-results" aria-label="移动端矩阵结果">
-                {apiKeyEntries.map((entry) => (
+                {probeEntries.map((entry) => (
                   <section className="mobile-key-group" key={entry.id}>
-                    <h3>{entry.maskedLabel}</h3>
+                    <h3>{entry.displayLabel}</h3>
                     <div className="mobile-model-list">
                       {displayedModels.map((model) => {
                         const result = getResultForCell(entry.id, model.id);
                         const status = getCellStatus(entry, model.id);
                         const latencyLevel = getLatencyLevel(result?.firstTokenLatencyMs ?? null);
-                        const listedByKey = isModelListedByKey(entry, model.id);
+                        const listedByEntry = isModelListedByEntry(entry, model.id);
 
                         return (
                           <article className="mobile-model-card" key={model.id}>
                             <div>
                               <strong translate="no">{model.id}</strong>
                               <small>
-                                {listedByKey ? "已列入 /models" : "未列入 /models"}
+                                {listedByEntry ? "已列入 /models" : "未列入 /models"}
                               </small>
                             </div>
                             <span className={`badge badge-${status}`}>
@@ -1305,7 +1567,7 @@ export default function App() {
             <div className="section-head modal-head">
               <div>
                 <h2 id="model-picker-title">选择模型</h2>
-                <p id="model-picker-description">模型列表来自所有成功拉取的 Key 的并集。</p>
+                <p id="model-picker-description">{modelPickerDescription}</p>
               </div>
               <button
                 type="button"

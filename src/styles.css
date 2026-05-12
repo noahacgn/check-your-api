@@ -260,6 +260,33 @@ a {
   gap: 16px;
 }
 
+.mode-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--canvas);
+}
+
+.mode-tab {
+  min-height: 40px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+}
+
+.mode-tab:hover:not(:disabled) {
+  background: var(--surface-card);
+}
+
+.mode-tab.is-active,
+.mode-tab.is-active:hover:not(:disabled) {
+  background: var(--surface-dark);
+  color: var(--on-dark);
+}
+
 .field {
   display: grid;
   gap: 9px;
