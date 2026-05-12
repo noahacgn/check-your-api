@@ -1160,7 +1160,7 @@ export default function App() {
                       }}
                       id="api-key"
                       name="apiKey"
-                      type="password"
+                      type="text"
                       autoComplete="off"
                       autoCorrect="off"
                       autoCapitalize="off"
