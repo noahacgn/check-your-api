@@ -789,6 +789,11 @@ button:disabled {
   color: var(--on-dark-soft);
 }
 
+.badge-skipped {
+  background: var(--surface-dark-elevated);
+  color: var(--on-dark-soft);
+}
+
 .badge-checking {
   background: rgba(212, 160, 23, 0.18);
   color: #f0c266;

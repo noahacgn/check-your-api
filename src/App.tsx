@@ -11,7 +11,7 @@ type ModelsResponse = {
   data?: Model[];
 };
 
-type CheckStatus = "idle" | "checking" | "available" | "unavailable";
+type CheckStatus = "idle" | "checking" | "available" | "unavailable" | "skipped";
 type ModelFetchStatus = "idle" | "loading" | "loaded" | "failed";
 type ResultFilter = "all" | "available" | "unavailable" | "pending";
 type FieldName = "baseUrl" | "apiKeys" | "concurrency" | "prompt";
@@ -225,6 +225,10 @@ function getStatusLabel(status?: CheckStatus) {
     return "不可用";
   }
 
+  if (status === "skipped") {
+    return "跳过";
+  }
+
   return "待检测";
 }
 
@@ -246,6 +250,10 @@ function getFetchStatusLabel(status: ModelFetchStatus) {
 
 function getMatrixResultKey(keyId: string, modelId: string) {
   return `${keyId}::${modelId}`;
+}
+
+function isModelListedByKey(entry: ApiKeyEntry, modelId: string) {
+  return entry.modelIds.includes(modelId);
 }
 
 function getRawApiKeyLineCount(value: string) {
@@ -337,6 +345,18 @@ export default function App() {
     () => models.filter((model) => selectedModelIdSet.has(model.id)),
     [models, selectedModelIdSet]
   );
+  const visibleProbeablePairs = useMemo(
+    () =>
+      apiKeyEntries.flatMap((entry) =>
+        visibleModels
+          .filter((model) => isModelListedByKey(entry, model.id))
+          .map((model) => ({
+            keyId: entry.id,
+            modelId: model.id
+          }))
+      ),
+    [apiKeyEntries, visibleModels]
+  );
   const filteredPickerModels = useMemo(
     () =>
       models.filter(
@@ -347,15 +367,13 @@ export default function App() {
     [models, modelSearchQuery]
   );
 
-  const totalTaskCount = apiKeyEntries.length * visibleModels.length;
+  const totalTaskCount = visibleProbeablePairs.length;
   const visibleResultValues = useMemo(
     () =>
-      apiKeyEntries
-        .flatMap((entry) =>
-          visibleModels.map((model) => matrixResults[getMatrixResultKey(entry.id, model.id)])
-        )
+      visibleProbeablePairs
+        .map((pair) => matrixResults[getMatrixResultKey(pair.keyId, pair.modelId)])
         .filter((result): result is MatrixResult => Boolean(result)),
-    [apiKeyEntries, matrixResults, visibleModels]
+    [matrixResults, visibleProbeablePairs]
   );
   const availableCount = useMemo(
     () => visibleResultValues.filter((result) => result.status === "available").length,
@@ -386,8 +404,16 @@ export default function App() {
   const getResultForCell = (keyId: string, modelId: string) =>
     matrixResults[getMatrixResultKey(keyId, modelId)];
 
+  const getCellStatus = (entry: ApiKeyEntry, modelId: string): CheckStatus => {
+    if (!isModelListedByKey(entry, modelId)) {
+      return "skipped";
+    }
+
+    return getResultForCell(entry.id, modelId)?.status ?? "idle";
+  };
+
   const getModelStatuses = (modelId: string) =>
-    apiKeyEntries.map((entry) => getResultForCell(entry.id, modelId)?.status ?? "idle");
+    apiKeyEntries.map((entry) => getCellStatus(entry, modelId));
 
   const filterCounts: Record<ResultFilter, number> = {
     all: visibleModels.length,
@@ -763,15 +789,25 @@ export default function App() {
       return;
     }
 
+    const tasks: MatrixTask[] = apiKeyEntries.flatMap((entry) =>
+      visibleModels
+        .filter((model) => isModelListedByKey(entry, model.id))
+        .map((model) => ({
+          keyId: entry.id,
+          apiKey: entry.value,
+          modelId: model.id
+        }))
+    );
+
+    if (tasks.length === 0) {
+      setFetchError("当前选中的模型没有匹配到可探测的 API Key。");
+      setFieldErrors({});
+      setMatrixResults({});
+      return;
+    }
+
     const runId = checkRunId.current + 1;
     checkRunId.current = runId;
-    const tasks: MatrixTask[] = apiKeyEntries.flatMap((entry) =>
-      visibleModels.map((model) => ({
-        keyId: entry.id,
-        apiKey: entry.value,
-        modelId: model.id
-      }))
-    );
 
     setCheckingModels(true);
     setFetchError("");
@@ -1172,9 +1208,9 @@ export default function App() {
                         </th>
                         {apiKeyEntries.map((entry) => {
                           const result = getResultForCell(entry.id, model.id);
-                          const status = result?.status ?? "idle";
+                          const status = getCellStatus(entry, model.id);
                           const latencyLevel = getLatencyLevel(result?.firstTokenLatencyMs ?? null);
-                          const listedByKey = entry.modelIds.includes(model.id);
+                          const listedByKey = isModelListedByKey(entry, model.id);
 
                           return (
                             <td key={entry.id}>
@@ -1212,9 +1248,9 @@ export default function App() {
                     <div className="mobile-model-list">
                       {displayedModels.map((model) => {
                         const result = getResultForCell(entry.id, model.id);
-                        const status = result?.status ?? "idle";
+                        const status = getCellStatus(entry, model.id);
                         const latencyLevel = getLatencyLevel(result?.firstTokenLatencyMs ?? null);
-                        const listedByKey = entry.modelIds.includes(model.id);
+                        const listedByKey = isModelListedByKey(entry, model.id);
 
                         return (
                           <article className="mobile-model-card" key={model.id}>
