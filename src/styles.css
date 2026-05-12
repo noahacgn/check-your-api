@@ -671,7 +671,6 @@ button:disabled {
 .results-panel .section-head p,
 .results-panel .progress-copy span,
 .results-panel .empty,
-.results-panel .probe-empty,
 .results-panel .probe-group-head p,
 .results-panel .probe-card-main span {
   color: var(--on-dark-soft);
@@ -894,14 +893,6 @@ button:disabled {
 
 .probe-card .failure-reason {
   grid-column: 1 / -1;
-}
-
-.probe-empty {
-  padding: 18px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 12px;
-  background: var(--surface-dark-soft);
-  text-align: center;
 }
 
 .badge {

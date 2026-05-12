@@ -554,7 +554,7 @@ export default function App() {
     ).length
   };
 
-  const displayedProbeGroups = useMemo(
+  const probeGroups = useMemo(
     () =>
       probeEntries.map((entry) => {
         const items = visibleModels
@@ -585,6 +585,14 @@ export default function App() {
         };
       }),
     [probeEntries, probeResults, resultFilter, visibleModels]
+  );
+  const displayedProbeGroups = useMemo(
+    () => probeGroups.filter((group) => group.items.length > 0),
+    [probeGroups]
+  );
+  const probeableGroupCount = useMemo(
+    () => probeGroups.filter((group) => group.totalCount > 0).length,
+    [probeGroups]
   );
 
   const statusHeadline = useMemo(() => {
@@ -1503,6 +1511,10 @@ export default function App() {
             <div className="empty empty-dark">还没有模型。先获取模型并集。</div>
           ) : visibleModels.length === 0 ? (
             <div className="empty empty-dark">当前没有选中任何模型。</div>
+          ) : probeableGroupCount === 0 ? (
+            <div className="empty empty-dark">当前选择下没有可探测模型。</div>
+          ) : displayedProbeGroups.length === 0 ? (
+            <div className="empty empty-dark">这个筛选条件下没有结果。</div>
           ) : (
             <div className="probe-groups" aria-label="按列盘点结果">
               {displayedProbeGroups.map((group) => (
@@ -1528,41 +1540,35 @@ export default function App() {
                     </dl>
                   </div>
 
-                  {group.totalCount === 0 ? (
-                    <div className="probe-empty">当前选择下没有可探测模型。</div>
-                  ) : group.items.length === 0 ? (
-                    <div className="probe-empty">这个筛选条件下没有结果。</div>
-                  ) : (
-                    <div className="probe-list">
-                      {group.items.map(({ model, result, status, latencyLevel }) => (
-                        <article className="probe-card" key={model.id}>
-                          <div className="probe-card-main">
-                            <strong translate="no">{model.id}</strong>
-                            <span>
-                              {model.owned_by ? `owned by ${model.owned_by}` : "未提供所有者信息"}
-                            </span>
-                          </div>
+                  <div className="probe-list">
+                    {group.items.map(({ model, result, status, latencyLevel }) => (
+                      <article className="probe-card" key={model.id}>
+                        <div className="probe-card-main">
+                          <strong translate="no">{model.id}</strong>
+                          <span>
+                            {model.owned_by ? `owned by ${model.owned_by}` : "未提供所有者信息"}
+                          </span>
+                        </div>
 
-                          <div className="probe-card-status">
-                            <span className={`badge badge-${status}`}>
-                              {getStatusLabel(status)}
+                        <div className="probe-card-status">
+                          <span className={`badge badge-${status}`}>
+                            {getStatusLabel(status)}
+                          </span>
+                          {status === "available" ? (
+                            <span className={`latency latency-${latencyLevel}`}>
+                              {typeof result?.firstTokenLatencyMs === "number"
+                                ? `${result.firstTokenLatencyMs} ms`
+                                : "无首字延迟"}
                             </span>
-                            {status === "available" ? (
-                              <span className={`latency latency-${latencyLevel}`}>
-                                {typeof result?.firstTokenLatencyMs === "number"
-                                  ? `${result.firstTokenLatencyMs} ms`
-                                  : "无首字延迟"}
-                              </span>
-                            ) : null}
-                          </div>
-
-                          {status === "unavailable" && result?.errorMessage ? (
-                            <p className="failure-reason">{result.errorMessage}</p>
                           ) : null}
-                        </article>
-                      ))}
-                    </div>
-                  )}
+                        </div>
+
+                        {status === "unavailable" && result?.errorMessage ? (
+                          <p className="failure-reason">{result.errorMessage}</p>
+                        ) : null}
+                      </article>
+                    ))}
+                  </div>
                 </section>
               ))}
             </div>
