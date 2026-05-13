@@ -450,6 +450,7 @@ export default function App() {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [resultFilter, setResultFilter] = useState<ResultFilter>("all");
   const [probeResults, setProbeResults] = useState<Record<string, ProbeResult>>({});
+  const [expandedProbeGroupIds, setExpandedProbeGroupIds] = useState<string[]>([]);
   const fieldRefs = useRef<Record<FieldName, InputElement | null>>({
     baseUrl: null,
     baseUrls: null,
@@ -686,6 +687,7 @@ export default function App() {
     setShowColumnDetails(false);
     setModelSearchQuery("");
     setResultFilter("all");
+    setExpandedProbeGroupIds([]);
   };
 
   const updateMode = (mode: ProbeMode) => {
@@ -855,6 +857,7 @@ export default function App() {
     setProbeResults({});
     setResultFilter("all");
     setShowColumnDetails(false);
+    setExpandedProbeGroupIds([]);
 
     try {
       const queue = [...nextProbeEntries];
@@ -1077,6 +1080,14 @@ export default function App() {
       current.includes(modelId)
         ? current.filter((id) => id !== modelId)
         : [...current, modelId]
+    );
+  };
+
+  const toggleProbeGroup = (entryId: string) => {
+    setExpandedProbeGroupIds((current) =>
+      current.includes(entryId)
+        ? current.filter((id) => id !== entryId)
+        : [...current, entryId]
     );
   };
 
@@ -1517,60 +1528,85 @@ export default function App() {
             <div className="empty empty-dark">这个筛选条件下没有结果。</div>
           ) : (
             <div className="probe-groups" aria-label="按列盘点结果">
-              {displayedProbeGroups.map((group) => (
-                <section className="probe-group" key={group.entry.id}>
-                  <div className="probe-group-head">
-                    <div>
-                      <h3>{group.entry.displayLabel}</h3>
-                      <p>
-                        {group.totalCount} 个模型，已完成 {group.checkedCount}，待完成{" "}
-                        {group.pendingCount}
-                      </p>
+              {displayedProbeGroups.map((group) => {
+                const isExpanded = expandedProbeGroupIds.includes(group.entry.id);
+                const probeListId = `probe-list-${group.entry.id}`;
+
+                return (
+                  <section className="probe-group" key={group.entry.id}>
+                    <div className="probe-group-head">
+                      <div>
+                        <h3>{group.entry.displayLabel}</h3>
+                        <p>
+                          {group.totalCount} 个模型，已完成 {group.checkedCount}，待完成{" "}
+                          {group.pendingCount}
+                        </p>
+                      </div>
+
+                      <div className="probe-group-actions">
+                        <dl className="probe-group-stats" aria-label={`${group.entry.label} 统计`}>
+                          <div>
+                            <dt>可用</dt>
+                            <dd>{group.availableCount}</dd>
+                          </div>
+                          <div>
+                            <dt>不可用</dt>
+                            <dd>{group.unavailableCount}</dd>
+                          </div>
+                        </dl>
+
+                        <button
+                          type="button"
+                          className="probe-group-toggle"
+                          aria-expanded={isExpanded}
+                          aria-controls={probeListId}
+                          onClick={() => toggleProbeGroup(group.entry.id)}
+                        >
+                          {isExpanded ? "收起" : "展开"} {group.items.length} 个模型
+                        </button>
+                      </div>
                     </div>
 
-                    <dl className="probe-group-stats" aria-label={`${group.entry.label} 统计`}>
-                      <div>
-                        <dt>可用</dt>
-                        <dd>{group.availableCount}</dd>
-                      </div>
-                      <div>
-                        <dt>不可用</dt>
-                        <dd>{group.unavailableCount}</dd>
-                      </div>
-                    </dl>
-                  </div>
+                    <div
+                      className="probe-list"
+                      id={probeListId}
+                      hidden={!isExpanded}
+                    >
+                      {isExpanded
+                        ? group.items.map(({ model, result, status, latencyLevel }) => (
+                            <article className="probe-card" key={model.id}>
+                              <div className="probe-card-main">
+                                <strong translate="no">{model.id}</strong>
+                                <span>
+                                  {model.owned_by
+                                    ? `owned by ${model.owned_by}`
+                                    : "未提供所有者信息"}
+                                </span>
+                              </div>
 
-                  <div className="probe-list">
-                    {group.items.map(({ model, result, status, latencyLevel }) => (
-                      <article className="probe-card" key={model.id}>
-                        <div className="probe-card-main">
-                          <strong translate="no">{model.id}</strong>
-                          <span>
-                            {model.owned_by ? `owned by ${model.owned_by}` : "未提供所有者信息"}
-                          </span>
-                        </div>
+                              <div className="probe-card-status">
+                                <span className={`badge badge-${status}`}>
+                                  {getStatusLabel(status)}
+                                </span>
+                                {status === "available" ? (
+                                  <span className={`latency latency-${latencyLevel}`}>
+                                    {typeof result?.firstTokenLatencyMs === "number"
+                                      ? `${result.firstTokenLatencyMs} ms`
+                                      : "无首字延迟"}
+                                  </span>
+                                ) : null}
+                              </div>
 
-                        <div className="probe-card-status">
-                          <span className={`badge badge-${status}`}>
-                            {getStatusLabel(status)}
-                          </span>
-                          {status === "available" ? (
-                            <span className={`latency latency-${latencyLevel}`}>
-                              {typeof result?.firstTokenLatencyMs === "number"
-                                ? `${result.firstTokenLatencyMs} ms`
-                                : "无首字延迟"}
-                            </span>
-                          ) : null}
-                        </div>
-
-                        {status === "unavailable" && result?.errorMessage ? (
-                          <p className="failure-reason">{result.errorMessage}</p>
-                        ) : null}
-                      </article>
-                    ))}
-                  </div>
-                </section>
-              ))}
+                              {status === "unavailable" && result?.errorMessage ? (
+                                <p className="failure-reason">{result.errorMessage}</p>
+                              ) : null}
+                            </article>
+                          ))
+                        : null}
+                    </div>
+                  </section>
+                );
+              })}
             </div>
           )}
         </section>

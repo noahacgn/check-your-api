@@ -845,9 +845,38 @@ button:disabled {
   line-height: 1;
 }
 
+.probe-group-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+button.probe-group-toggle {
+  flex: none;
+  min-height: 40px;
+  align-self: stretch;
+  padding: 10px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--surface-dark-soft);
+  color: var(--on-dark);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+button.probe-group-toggle:hover:not(:disabled) {
+  background: var(--surface-dark);
+}
+
 .probe-list {
   display: grid;
   gap: 10px;
+}
+
+.probe-list[hidden] {
+  display: none;
 }
 
 .probe-card {
@@ -1159,6 +1188,14 @@ button:disabled {
 
   .probe-group-stats div {
     flex: 1 1 120px;
+  }
+
+  .probe-group-actions {
+    width: 100%;
+  }
+
+  .probe-group-toggle {
+    width: 100%;
   }
 }
 
